@@ -95,6 +95,58 @@ program
   });
 
 program
+  .command('list')
+  .description('List your artifacts')
+  .option('-l, --limit <number>', 'Number of artifacts to list', '20')
+  .action(async (options) => {
+    const config = await loadConfig();
+    try {
+      const response = await axios.get(`https://molthub.info/api/v1/artifacts?limit=${options.limit}`, {
+        headers: {
+          'Authorization': config.token ? `Bearer ${config.token}` : ''
+        }
+      });
+      
+      console.log(chalk.cyan('\n--- Your Molthub Artifacts ---\n'));
+      response.data.artifacts.forEach((a: any) => {
+        console.log(`${chalk.bold(a.title)} [${a.category}]`);
+        console.log(`${chalk.gray('ID:')} ${a.id}`);
+        console.log(`${chalk.gray('Slug:')} ${a.slug}`);
+        console.log(`${chalk.gray('URL:')} https://molthub.info/artifacts/${a.slug}`);
+        console.log('---');
+      });
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`));
+    }
+  });
+
+program
+  .command('delete')
+  .description('Archive an artifact (soft delete)')
+  .argument('<id>', 'Artifact ID (UUID) to archive')
+  .action(async (id) => {
+    const config = await loadConfig();
+    if (!config.token) {
+      console.error(chalk.red('Error: Not logged in.'));
+      process.exit(1);
+    }
+
+    try {
+      console.log(chalk.cyan(`🚀 Archiving artifact ${id}...`));
+      await axios.delete(`https://molthub.info/api/v1/artifacts/${id}`, {
+        headers: {
+          'Authorization': `Bearer ${config.token}`,
+          'User-Agent': 'Molthub-CLI/1.1.0'
+        }
+      });
+      console.log(chalk.green('✔ Successfully archived!'));
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.response?.data?.error || error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
   .command('publish')
   .description('Publish or update an artifact on Molthub')
   .option('-i, --id <id>', 'Existing Artifact ID (UUID) to update')
