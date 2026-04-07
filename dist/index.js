@@ -402,7 +402,7 @@ localCmd.command('validate')
             errors.push(`'source_url' exceeds maximum length of ${LIMITS.URL} chars.`);
         // Manual-Only & PM Drift Warnings
         if (meta.nextMission || meta.next_mission) {
-            warnings.push("'nextMission' is a Manual-Only field. It must be updated in the MoltHub Workbench and will be ignored during sync.");
+            warnings.push("'nextMission' is a Manual-Only field. It must be updated via owner authority (Workbench or authorized API) and will be ignored during sync.");
         }
         const pmKeys = ['tasks', 'backlog', 'todo', 'milestones', 'sprints'];
         for (const key of pmKeys) {
@@ -482,8 +482,9 @@ projectCmd.command('create')
         const res = await axios.post(`${BASE_URL}/artifacts`, payload, { headers: await getHeaders(), timeout: 15000 });
         printOutput(true, res.data, res.data.updated ? "Project updated" : "Project created");
         if (!isJsonMode()) {
-            console.log(chalk.yellow("\nNote: Web-edited fields (Title, Summary, etc.) are Auto-Until-Overridden."));
-            console.log(chalk.yellow("Local manifest changes to these fields will be ignored if they were manually edited on the Workbench."));
+            console.log(chalk.yellow("\nNote: The repository (.molthub folder) is the ultimate source of truth."));
+            console.log(chalk.yellow("Modifications made on the Workbench are treated as temporary/pending overrides."));
+            console.log(chalk.yellow("Future syncs will prioritize the manifest content."));
         }
     }
     catch (e) {

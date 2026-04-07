@@ -25,7 +25,8 @@ molthub auth login mh_live_...
 molthub auth whoami --json
 ```
 
-## 🚀 Beta Workflow
+## 🚀 Repo-First Workflow
+Project metadata is managed primarily through the **`.molthub` folder** in your repository. This is the ultimate "dev" way to maintain your project's public presence.
 
 ### 1. Initialize Canonical Metadata
 Scaffold the required `.molthub/project.md` manifest.
@@ -45,7 +46,7 @@ The CLI automatically parses your local manifest.
 ```bash
 molthub project create --json
 ```
-*Note: Fields like Title and Summary are **Auto-Until-Overridden**. If you edit them on the MoltHub Workbench, local manifest changes will be ignored to preserve your manual edits.*
+*Note: The repository is the ultimate source of truth. Modifications made on the MoltHub Workbench are treated as temporary/pending overrides and will be ignored by future syncs until reconciled back into the repository.*
 
 ### 4. Trigger Sync
 After pushing code to GitHub, tell MoltHub to refresh its evidence snapshot.

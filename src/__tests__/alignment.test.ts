@@ -6,21 +6,26 @@ import os from 'path';
 
 const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
 const CLI_PATH = `node --loader ts-node/esm "${CLI_ABS_PATH}"`;
-const TEST_DIR = path.join(process.cwd(), 'tmp-test-cli');
 
 describe('MoltHub CLI Beta Alignment', () => {
+  let testDir: string;
+
   beforeEach(() => {
-    if (fs.existsSync(TEST_DIR)) fs.removeSync(TEST_DIR);
-    fs.ensureDirSync(TEST_DIR);
+    testDir = path.join(process.cwd(), `tmp-test-${Math.random().toString(36).slice(2)}`);
+    fs.ensureDirSync(testDir);
   });
 
   afterEach(() => {
-    if (fs.existsSync(TEST_DIR)) fs.removeSync(TEST_DIR);
+    try {
+      if (fs.existsSync(testDir)) fs.removeSync(testDir);
+    } catch (e) {
+      // Ignore cleanup errors in tests
+    }
   });
 
   it('local init creates canonical .molthub/project.md', () => {
-    execSync(`${CLI_PATH} local init --name "Test Project"`, { cwd: TEST_DIR });
-    const manifestPath = path.join(TEST_DIR, '.molthub', 'project.md');
+    execSync(`${CLI_PATH} local init --name "Test Project"`, { cwd: testDir });
+    const manifestPath = path.join(testDir, '.molthub', 'project.md');
     expect(fs.existsSync(manifestPath)).toBe(true);
     
     const content = fs.readFileSync(manifestPath, 'utf8');
@@ -37,11 +42,11 @@ describe('MoltHub CLI Beta Alignment', () => {
       collaboration: false,
       skillsNeeded: ["legacy-skill"]
     };
-    fs.writeJsonSync(path.join(TEST_DIR, 'molthub.json'), legacyData);
+    fs.writeJsonSync(path.join(testDir, 'molthub.json'), legacyData);
 
-    execSync(`${CLI_PATH} local init`, { cwd: TEST_DIR });
+    execSync(`${CLI_PATH} local init`, { cwd: testDir });
     
-    const manifestPath = path.join(TEST_DIR, '.molthub', 'project.md');
+    const manifestPath = path.join(testDir, '.molthub', 'project.md');
     const content = fs.readFileSync(manifestPath, 'utf8');
     
     expect(content).toContain('title: "Legacy Title"');
@@ -51,7 +56,7 @@ describe('MoltHub CLI Beta Alignment', () => {
   });
 
   it('local validate warns on nextMission', () => {
-    fs.ensureDirSync(path.join(TEST_DIR, '.molthub'));
+    fs.ensureDirSync(path.join(testDir, '.molthub'));
     const manifest = `---
 title: "Test"
 category: "Agent"
@@ -59,15 +64,15 @@ source_url: "https://github.com/test"
 nextMission: "Testing"
 ---
 # Body`;
-    fs.writeFileSync(path.join(TEST_DIR, '.molthub', 'project.md'), manifest);
+    fs.writeFileSync(path.join(testDir, '.molthub', 'project.md'), manifest);
 
-    const output = execSync(`${CLI_PATH} local validate`, { cwd: TEST_DIR }).toString();
+    const output = execSync(`${CLI_PATH} local validate`, { cwd: testDir }).toString();
     expect(output).toContain('nextMission');
     expect(output).toContain('Manual-Only field');
   });
 
   it('local validate warns on PM keys', () => {
-    fs.ensureDirSync(path.join(TEST_DIR, '.molthub'));
+    fs.ensureDirSync(path.join(testDir, '.molthub'));
     const manifest = `---
 title: "Test"
 category: "Agent"
@@ -75,17 +80,17 @@ source_url: "https://github.com/test"
 tasks: ["task1"]
 ---
 # Body`;
-    fs.writeFileSync(path.join(TEST_DIR, '.molthub', 'project.md'), manifest);
+    fs.writeFileSync(path.join(testDir, '.molthub', 'project.md'), manifest);
 
-    const output = execSync(`${CLI_PATH} local validate`, { cwd: TEST_DIR }).toString();
+    const output = execSync(`${CLI_PATH} local validate`, { cwd: testDir }).toString();
     expect(output).toContain("'tasks' detected");
   });
 
   it('local validate rejects legacy-only JSON beta usage', () => {
-    fs.writeJsonSync(path.join(TEST_DIR, 'molthub.json'), { title: "Test" });
+    fs.writeJsonSync(path.join(testDir, 'molthub.json'), { title: "Test" });
     
     try {
-      execSync(`${CLI_PATH} local validate`, { cwd: TEST_DIR, stdio: 'pipe' });
+      execSync(`${CLI_PATH} local validate`, { cwd: testDir, stdio: 'pipe' });
       throw new Error("Should have failed");
     } catch (e: any) {
       expect(e.stdout.toString() + e.stderr.toString()).toContain('Legacy \'molthub.json\' detected');

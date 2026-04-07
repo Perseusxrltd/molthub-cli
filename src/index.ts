@@ -495,8 +495,9 @@ projectCmd.command('create')
       const res = await axios.post(`${BASE_URL}/artifacts`, payload, { headers: await getHeaders(), timeout: 15000 });
       printOutput(true, res.data, res.data.updated ? "Project updated" : "Project created");
       if (!isJsonMode()) {
-        console.log(chalk.yellow("\nNote: Web-edited fields (Title, Summary, etc.) are Auto-Until-Overridden."));
-        console.log(chalk.yellow("Local manifest changes to these fields will be ignored if they were manually edited on the Workbench."));
+        console.log(chalk.yellow("\nNote: The repository (.molthub folder) is the ultimate source of truth."));
+        console.log(chalk.yellow("Modifications made on the Workbench are treated as temporary/pending overrides."));
+        console.log(chalk.yellow("Future syncs will prioritize the manifest content."));
       }
     } catch (e) {
       handleApiError(e, "Failed to create project");
