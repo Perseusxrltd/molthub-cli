@@ -415,7 +415,7 @@ localCmd.command('validate')
 
       // Manual-Only & PM Drift Warnings
       if (meta.nextMission || meta.next_mission) {
-        warnings.push("'nextMission' is a Manual-Only field. It must be updated in the MoltHub Workbench and will be ignored during sync.");
+        warnings.push("'nextMission' is a Manual-Only field. It must be updated via owner authority (Workbench or authorized API) and will be ignored during sync.");
       }
 
       const pmKeys = ['tasks', 'backlog', 'todo', 'milestones', 'sprints'];

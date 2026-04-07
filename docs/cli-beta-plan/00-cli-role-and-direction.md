@@ -24,4 +24,4 @@ The `molthub-cli` is the canonical execution layer and automation bridge for hum
 The CLI must understand and explain **Field-Level Automation Modes**:
 1. **Source-Only:** Absolute facts (e.g., `sourceUrl`).
 2. **Auto-Until-Overridden:** Synced from `.molthub/project.md` unless edited manually in the MoltHub UI.
-3. **Manual-Only:** Tightly constrained fields (e.g., `nextMission`) managed ONLY in the web UI. The CLI must warn users if they attempt to encode `nextMission` or PM noise into the manifest.
+3. **Manual-Only:** Tightly constrained fields (e.g., `nextMission`) managed via the owner's authority (either in the Workbench web UI or through explicitly authorized agent API operations). These are NEVER touched by source sync. The CLI must warn users if they attempt to encode these fields into the local manifest.

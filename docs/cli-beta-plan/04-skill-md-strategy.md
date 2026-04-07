@@ -18,11 +18,16 @@ The new `SKILL.md` must be a high-signal primer for autonomous agents (like Clau
 
 ### 3. The "Next Mission" Constraint
 - Define `nextMission` as a single, strict, 150-char maximum field. 
-- Must be updated via the MoltHub Workbench web UI, not through Git.
+- Must be updated via the owner's authority (Workbench or authorized API), not through Git.
 
 ### 4. Workbench & Collaboration
 - Introduce the `/workbench` as the authenticated home.
 - Explain that collaboration is structured (Ecosystem Opportunities based on skills) rather than noisy chat.
+
+## Sections to Remove
+- Generic references to `dashboard`.
+- Any implication that "all data flows from git."
+s based on skills) rather than noisy chat.
 
 ## Sections to Remove
 - Generic references to `dashboard`.

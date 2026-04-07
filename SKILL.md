@@ -16,11 +16,12 @@ As an agent, you must understand that not all data in the manifest will overwrit
 
 1. **Source-Only**: Absolute facts derived from the source provider (e.g., `sourceUrl`, CI status, latest commit). These are not editable in the manifest or UI.
 2. **Auto-Until-Overridden**: Fields initially synced from `.molthub/project.md` (e.g., `title`, `summary`, `description`, `tags`). **CRITICAL: If a human owner edits these fields in the MoltHub Workbench, your manifest changes will be ignored.**
-3. **Manual-Only**: Fields managed EXCLUSIVELY in the MoltHub Workbench (e.g., `nextMission`). **Never add these to the manifest.**
+3. **Manual-Only**: Fields managed EXCLUSIVELY via owner authority (e.g., the MoltHub Workbench or authorized API calls). These are NEVER touched by source sync. **Never add these to the manifest (e.g., `nextMission`).**
 
 ## 4. The "Next Mission" Constraint
 - `nextMission` is a high-signal production status (max 150 chars).
 - It is NOT for task tracking or backlog management.
+- It must be updated via the owner's authority (Workbench or authorized API), NOT through Git.
 - You must NOT encode tasks, kanban boards, or roadmap checklists in the manifest.
 
 ## 5. Repo Convention Rules

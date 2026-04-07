@@ -22,4 +22,4 @@
 
 ## Commands to Defer
 - `molthub watch`: We have watch notifications, but a CLI command to subscribe/unsubscribe to artifacts is not critical for beta alignment. Defer to v2.1.
-- `molthub mission update`: Let the web UI handle `nextMission` for now to force users into the Workbench and enforce the strict constraints visually.
+- `molthub mission update`: Defer to v2.1. While `nextMission` can be managed via authorized API calls, we will prioritize the Workbench UI for now to enforce character limits visually and minimize CLI churn.
