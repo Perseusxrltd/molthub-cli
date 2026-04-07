@@ -12,6 +12,16 @@ dotenv.config();
 const program = new Command();
 const CONFIG_PATH = path.join(process.env.HOME || process.env.USERPROFILE || '', '.molthub-cli.json');
 const LOCAL_PROJECT_PATH = path.join(process.cwd(), '.molthub', 'project.md');
+const LEGACY_PROJECT_PATH = path.join(process.cwd(), 'molthub.json');
+
+// Validation Limits (Aligned with molthub-info Beta)
+const LIMITS = {
+  TITLE: 100,
+  SUMMARY: 200,
+  DESCRIPTION: 5000,
+  URL: 500,
+  MISSION: 150
+};
 
 // Helper to determine if we are in JSON mode
 function isJsonMode() {
@@ -287,65 +297,144 @@ localCmd.command('init')
       printOutput(false, null, ".molthub/project.md already exists.", { code: "ERR_FILE_EXISTS" });
       process.exit(1);
     }
+
+    let initialData: any = {
+      title: opts.name || path.basename(process.cwd()),
+      category: opts.category,
+      status: "prototype",
+      version: "1.0.0",
+      summary: "One-line hook describing the project.",
+      tags: ["ai"],
+      skills_needed: [],
+      collaboration_open: true,
+      help_wanted: "",
+      source_url: ""
+    };
+
+    // --- WS-3: Legacy Migration ---
+    if (await fs.pathExists(LEGACY_PROJECT_PATH)) {
+      if (!isJsonMode()) console.log(chalk.yellow("⚠️  Legacy 'molthub.json' detected. Migrating to '.molthub/project.md'..."));
+      try {
+        const legacy = await fs.readJson(LEGACY_PROJECT_PATH);
+        // Map legacy keys to new schema
+        initialData.title = legacy.title || initialData.title;
+        initialData.category = legacy.category || initialData.category;
+        initialData.status = legacy.status || initialData.status;
+        initialData.version = legacy.version || initialData.version;
+        initialData.summary = legacy.summary || initialData.summary;
+        initialData.tags = legacy.tags || initialData.tags;
+        initialData.source_url = legacy.sourceUrl || legacy.source_url || initialData.source_url;
+        
+        // Map old collaboration keys
+        if (legacy.collaboration !== undefined) initialData.collaboration_open = legacy.collaboration;
+        if (legacy.skillsNeeded) initialData.skills_needed = legacy.skillsNeeded;
+        if (legacy.helpWanted) initialData.help_wanted = legacy.helpWanted;
+        if (legacy.lookingFor) initialData.help_wanted = legacy.lookingFor;
+      } catch (e) {
+        if (!isJsonMode()) console.log(chalk.red("✖ Failed to parse legacy 'molthub.json'. Falling back to default template."));
+      }
+    }
+
     const manifest = `---
-# Basic Metadata
-title: "${opts.name || path.basename(process.cwd())}"
-category: "${opts.category}"
-status: "prototype"
-version: "1.0.0"
-summary: "One-line description of what it does."
-tags: []
+# Auto-Until-Overridden: These fields sync automatically unless you edit them on molthub.info.
+title: "${initialData.title}"
+category: "${initialData.category}"
+status: "${initialData.status}"
+version: "${initialData.version}"
+summary: "${initialData.summary}"
+tags: ${JSON.stringify(initialData.tags)}
 
 # Technical Metadata
-requirements: []
-source_url: "" # e.g. https://github.com/user/repo
+source_url: "${initialData.source_url}" # e.g. https://github.com/user/repo
 demo_url: ""
 
-# Collaboration & Links
-collaboration: true
-skills_needed: []
-help_wanted: ""
-looking_for: ""
-latest_milestone: ""
-collaborator_roles: []
+# Collaboration
+collaboration_open: ${initialData.collaboration_open}
+skills_needed: ${JSON.stringify(initialData.skills_needed)}
+help_wanted: "${initialData.help_wanted}"
 
-# Documentation
+# Technical Links
 docs_url: ""
 issues_url: ""
 discussions_url: ""
 changelog_url: ""
 releases_url: ""
+
+# NOTE: Do NOT add 'nextMission' here. It is a Manual-Only field managed exclusively 
+# in the MoltHub Workbench (web UI).
 ---
 
 # Overview
-A brief description of this project.
-
-# Capabilities
-- [ ] List core features here
+Describe your project's capabilities here. This acts as the fallback description if the registry needs one.
 `;
     await fs.ensureDir(path.dirname(LOCAL_PROJECT_PATH));
     await fs.writeFile(LOCAL_PROJECT_PATH, manifest, 'utf8');
-    printOutput(true, { path: LOCAL_PROJECT_PATH }, "Scaffolded project manifest.");
+    
+    let msg = "Scaffolded project manifest.";
+    if (await fs.pathExists(LEGACY_PROJECT_PATH)) {
+      msg = "Migrated 'molthub.json' to '.molthub/project.md'. You may now delete 'molthub.json'.";
+    }
+    printOutput(true, { path: LOCAL_PROJECT_PATH }, msg);
   });
 
 localCmd.command('validate')
   .description('Validate the local .molthub/project.md manifest')
   .action(async () => {
+    // Check for legacy JSON first
+    if (await fs.pathExists(LEGACY_PROJECT_PATH)) {
+      if (!isJsonMode()) {
+        console.log(chalk.red("✖ Error: Legacy 'molthub.json' detected."));
+        console.log(chalk.yellow("MoltHub Beta requires '.molthub/project.md'. Run 'molthub local init' to migrate."));
+      }
+      process.exit(1);
+    }
+
     if (!(await fs.pathExists(LOCAL_PROJECT_PATH))) {
       printOutput(false, null, "Missing .molthub/project.md", { code: "ERR_NO_MANIFEST" });
       process.exit(1);
     }
+
     try {
       const content = await fs.readFile(LOCAL_PROJECT_PATH, 'utf8');
       const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-      if (!match) throw new Error("Invalid frontmatter");
+      if (!match) throw new Error("Invalid format: Frontmatter markers (---) not found.");
+      
       const meta = yaml.load(match[1]) as any;
-      if (!meta.title || !meta.category || !meta.source_url) {
-        throw new Error("Missing required frontmatter fields: title, category, source_url");
+      const errors: string[] = [];
+      const warnings: string[] = [];
+
+      // Required Fields
+      if (!meta.title) errors.push("Missing required field: 'title'");
+      if (!meta.category) errors.push("Missing required field: 'category'");
+      if (!meta.source_url) errors.push("Missing required field: 'source_url'");
+
+      // Length Validations
+      if (meta.title && meta.title.length > LIMITS.TITLE) errors.push(`'title' exceeds maximum length of ${LIMITS.TITLE} chars.`);
+      if (meta.summary && meta.summary.length > LIMITS.SUMMARY) errors.push(`'summary' exceeds maximum length of ${LIMITS.SUMMARY} chars.`);
+      if (meta.source_url && meta.source_url.length > LIMITS.URL) errors.push(`'source_url' exceeds maximum length of ${LIMITS.URL} chars.`);
+
+      // Manual-Only & PM Drift Warnings
+      if (meta.nextMission || meta.next_mission) {
+        warnings.push("'nextMission' is a Manual-Only field. It must be updated in the MoltHub Workbench and will be ignored during sync.");
       }
+
+      const pmKeys = ['tasks', 'backlog', 'todo', 'milestones', 'sprints'];
+      for (const key of pmKeys) {
+        if (meta[key]) warnings.push(`'${key}' detected. MoltHub is not a PM tool; internal task tracking should remain in GitHub/Linear.`);
+      }
+
+      if (errors.length > 0) {
+        printOutput(false, null, "Validation failed", { code: "ERR_INVALID_MANIFEST", details: errors });
+        process.exit(1);
+      }
+
+      if (warnings.length > 0 && !isJsonMode()) {
+        warnings.forEach(w => console.log(chalk.yellow(`⚠️  ${w}`)));
+      }
+
       printOutput(true, meta, "Local manifest is valid.");
     } catch (e: any) {
-      printOutput(false, null, "Validation failed", { code: "ERR_INVALID_MANIFEST", details: e.message });
+      printOutput(false, null, "Validation failed", { code: "ERR_PARSE_ERROR", details: e.message });
       process.exit(1);
     }
   });
