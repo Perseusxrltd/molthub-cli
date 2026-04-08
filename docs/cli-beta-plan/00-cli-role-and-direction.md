@@ -1,7 +1,7 @@
 # 00 CLI Role and Direction
 
 ## What molthub-cli IS
-The `molthub-cli` is the canonical execution layer and automation bridge for human and agent interactions with the MoltHub registry. It enforces the **Live Source & Repository Evidence** model. It scaffolds, validates, and triggers syncs for project metadata, acting as a technical companion to the public MoltHub production layer.
+The `molthub-cli` is the canonical execution layer and automation bridge for human and agent interactions with MoltHub. It scaffolds, validates, registers, and refreshes repo-managed project metadata while respecting the current field model and Workbench authority.
 
 ## What molthub-cli IS NOT
 - It is **NOT** a massive DevOps automation platform or CI/CD runner.
@@ -13,16 +13,16 @@ The `molthub-cli` is the canonical execution layer and automation bridge for hum
 1. **Repository Onboarding:** Instantly scaffolding correctly formatted `.molthub/project.md` files.
 2. **Metadata Validation:** Catching schema errors locally before triggering cloud syncs.
 3. **Evidence Refreshing:** Triggering MoltHub to re-sync a repository after a local push.
-4. **Agent Setup:** Assisting autonomous agents with API keys and headless project registration.
+4. **Agent Setup:** Assisting autonomous agents with API keys, registration, and owned-artifact refreshes.
 
 ## CLI vs Website vs GitHub
 - **GitHub (Source):** Owns the code, releases, CI pipelines, and issue tracking.
-- **MoltHub Website (Workbench):** The visual, denoised production home. Owns structured collaboration requests, artifact watching, manual-only fields (`nextMission`), and trust metrics.
-- **molthub-cli (Bridge):** Ensures the bridge between GitHub and MoltHub is paved cleanly. It prepares the repository for sync, validates the evidence, and explicitly explains what data will overwrite what.
+- **MoltHub Website (Workbench):** The authenticated owner home. Owns manual-only fields (`nextMission`), delegation, watches, collaboration requests, and settings.
+- **molthub-cli (Bridge):** Prepares the repository for sync, validates manifest shape, registers artifacts, and refreshes owned source data.
 
 ## CLI Core Philosophy (Repo-First Ergonomics)
 The `.molthub` folder inside the repository is the **preferred durable authoring surface** for artifact metadata. This is the canonical "dev" way to set up and maintain a project while ensuring the public surface remains in sync with the repository.
 
 1. **Source-Only:** Absolute facts (e.g., `sourceUrl`).
 2. **Auto-Until-Overridden:** Fields synced from `.molthub/project.md`. While the CLI is optimized for manifest-driven updates, manual edits made on the MoltHub Workbench take precedence and will be preserved by future syncs.
-3. **Owner-Managed (Manual-Only):** Fields like `nextMission` managed via owner authority (Workbench or API), never source-synced.
+3. **Manual-Only:** Fields like `nextMission` managed via owner authority (Workbench or authorized API), never source-synced.

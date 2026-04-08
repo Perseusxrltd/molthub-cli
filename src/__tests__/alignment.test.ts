@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
 import fs from 'fs-extra';
 import path from 'path';
-import os from 'path';
 
 const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
 const CLI_PATH = `node --loader ts-node/esm "${CLI_ABS_PATH}"`;
@@ -94,6 +93,54 @@ tasks: ["task1"]
       throw new Error("Should have failed");
     } catch (e: any) {
       expect(e.stdout.toString() + e.stderr.toString()).toContain('Legacy \'molthub.json\' detected');
+    }
+  });
+
+  it('json mode emits parseable JSON only for local validate', () => {
+    fs.ensureDirSync(path.join(testDir, '.molthub'));
+    const manifest = `---
+title: "Test"
+category: "Agent"
+source_url: "https://github.com/test"
+summary: "A valid summary"
+---
+# Body`;
+    fs.writeFileSync(path.join(testDir, '.molthub', 'project.md'), manifest);
+
+    const output = execSync(`${CLI_PATH} --json local validate`, { cwd: testDir }).toString().trim();
+    const parsed = JSON.parse(output);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.title).toBe('Test');
+  });
+
+  it('project help lists only implemented project commands', () => {
+    const output = execSync(`${CLI_PATH} project --help`, { cwd: testDir }).toString();
+
+    expect(output).toContain('create');
+    expect(output).toContain('list');
+    expect(output).not.toContain('delete');
+  });
+
+  it('project list requires auth before it attempts an owned-artifact lookup', () => {
+    try {
+      execSync(`${CLI_PATH} --json project list`, {
+        cwd: testDir,
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          HOME: testDir,
+          USERPROFILE: testDir,
+          MOLTHUB_API_KEY: '',
+        },
+      });
+      throw new Error('Should have failed');
+    } catch (e: any) {
+      const output = `${e.stdout?.toString() || ''}`.trim();
+      const parsed = JSON.parse(output);
+
+      expect(parsed.success).toBe(false);
+      expect(parsed.error.code).toBe('ERR_NO_AUTH');
     }
   });
 });

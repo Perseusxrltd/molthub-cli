@@ -7,7 +7,7 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import yaml from 'js-yaml'; // We will need this for parsing/writing .molthub/project.md
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const program = new Command();
 const CONFIG_PATH = path.join(process.env.HOME || process.env.USERPROFILE || '', '.molthub-cli.json');
@@ -96,7 +96,7 @@ async function getToken() {
 const getHeaders = async () => {
   const token = await getToken();
   return {
-    'Authorization': token ? `Bearer ${token}` : '',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
     'User-Agent': 'Molthub-CLI/2.0.0'
   };
 };
@@ -105,9 +105,9 @@ const BASE_URL = process.env.MOLTHUB_BASE_URL || 'https://molthub.info/api/v1';
 
 program
   .name('molthub')
-  .description('Canonical Operating Interface for MoltHub Agents')
+  .description('Repo-first operations for MoltHub artifacts and agents')
   .version('2.0.0')
-  .option('--json', 'Output strict JSON (machine-readable mode)');
+  .option('--json', 'Output JSON only (machine-readable mode)');
 
 // ==========================================
 // APPLY COMMANDS (Pending Agent Claim Flow)
@@ -154,7 +154,7 @@ applyCmd.command('agent')
     }
 
     try {
-      console.log(chalk.cyan('🚀 Submitting pending agent application...'));
+      if (!isJsonMode()) console.log(chalk.cyan('🚀 Submitting pending agent application...'));
       const res = await axios.post(`${BASE_URL}/agent/apply`, payload, { timeout: 15000 });
       
       // Store pending state
@@ -206,7 +206,7 @@ applyCmd.command('resend')
     }
 
     try {
-      console.log(chalk.cyan('📧 Requesting claim email resend...'));
+      if (!isJsonMode()) console.log(chalk.cyan('📧 Requesting claim email resend...'));
       const res = await axios.post(`${BASE_URL}/agent/apply/${config.pending.id}/resend`, {}, {
         headers: { 'Authorization': `Bearer ${config.pending.token}` }
       });
@@ -226,7 +226,7 @@ applyCmd.command('cancel')
     }
 
     try {
-      console.log(chalk.cyan('🛑 Cancelling application...'));
+      if (!isJsonMode()) console.log(chalk.cyan('🛑 Cancelling application...'));
       const res = await axios.delete(`${BASE_URL}/agent/apply/${config.pending.id}`, {
         headers: { 'Authorization': `Bearer ${config.pending.token}` }
       });
@@ -385,6 +385,8 @@ localCmd.command('validate')
       if (!isJsonMode()) {
         console.log(chalk.red("✖ Error: Legacy 'molthub.json' detected."));
         console.log(chalk.yellow("MoltHub Beta requires '.molthub/project.md'. Run 'molthub local init' to migrate."));
+      } else {
+        printOutput(false, null, "Legacy 'molthub.json' detected. Run 'molthub local init' to migrate.", { code: "ERR_LEGACY_MANIFEST" });
       }
       process.exit(1);
     }
@@ -505,10 +507,15 @@ projectCmd.command('create')
   });
 
 projectCmd.command('list')
-  .description('List your artifacts')
+  .description('List artifacts owned by the authenticated agent')
   .action(async () => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
+
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts`, { headers: await getHeaders() });
+      const res = await axios.get(`${BASE_URL}/artifacts?scope=owned`, { headers: await getHeaders() });
       printOutput(true, res.data.artifacts, "Fetched artifacts");
     } catch (e) {
       handleApiError(e, "Failed to list artifacts");
@@ -521,7 +528,7 @@ projectCmd.command('list')
 const syncCmd = program.command('sync').description('Manage repository evidence sync state');
 
 syncCmd.command('trigger')
-  .description('Trigger MoltHub to fetch the latest evidence from the remote repository')
+  .description('Trigger a source refresh for an owned artifact')
   .requiredOption('-i, --id <id>', 'Artifact UUID')
   .action(async (opts) => {
     try {

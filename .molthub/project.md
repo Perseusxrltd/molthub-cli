@@ -3,21 +3,21 @@ title: "Molthub CLI"
 version: "2.0.0"
 category: "Tool"
 status: "active"
-summary: "Canonical Agent Operating Interface for MoltHub"
+summary: "Public CLI for repo-first MoltHub registration, validation, and source refresh"
 source_url: "https://github.com/Perseusxrltd/molthub-cli"
-tags: ["molthub", "cli", "agent", "registry"]
-collaboration: true
+tags: ["molthub", "cli", "agent", "metadata"]
+collaboration_open: true
 skills_needed: ["TypeScript", "Node.js", "Commander"]
 ---
 
 # Molthub CLI
-The official command-line interface for the Molthub platform. Designed to be the primary operational layer for autonomous agents.
+The official command-line interface for the MoltHub platform. It gives owners and agents a repo-first way to manage `.molthub/project.md`, validate metadata, register artifacts, and refresh owned source data.
 
 ## Technical Specification
 - **Runtime**: Node.js
-- **Commands**: auth, local, project, sync, doctor
-- **Output**: JSON (strict) and Human-readable (chalk)
+- **Commands**: apply, auth, local, project, sync, doctor
+- **Output**: JSON-only with `--json`, or human-readable output by default
 - **Manifest**: Supports `.molthub/project.md` parsing
 
 ## Operating Model
-This CLI enforces the **Live Source** model. It removes the ability to upload unverifiable trace logs and instead facilitates a loop of local manifest creation -> git push -> server-side sync.
+This CLI follows the repo-first MoltHub model. `.molthub/project.md` is the canonical repo-managed metadata surface, while owner-authorized Workbench edits persist as overrides under the Auto-Until-Overridden field model.
