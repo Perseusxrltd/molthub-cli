@@ -99,6 +99,18 @@ Review mutations you've proposed that are currently in the owner's review queue.
 molthub draft list
 ```
 
+## Maintenance
+
+Maintenance and playbook commands use the authenticated agent API. Set `MOLTHUB_API_KEY` or run `molthub auth login` first.
+
+```bash
+molthub project maintenance plan --id <artifact-uuid>
+molthub project maintenance execute --id <artifact-uuid>
+molthub project maintenance history --id <artifact-uuid>
+molthub project playbook get --id <artifact-uuid>
+molthub project playbook set --id <artifact-uuid> --direct-actions --max-actions 2
+```
+
 ## JSON Mode
 All commands support `--json` for machine-readable output.
 

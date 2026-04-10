@@ -126,6 +126,8 @@ summary: "A valid summary"
     expect(output).toContain('create');
     expect(output).toContain('update');
     expect(output).toContain('production');
+    expect(output).toContain('maintenance');
+    expect(output).toContain('playbook');
     expect(output).not.toContain('delete');
   });
 
@@ -133,6 +135,28 @@ summary: "A valid summary"
     // Note: 'list' is now a top-level project command: molthub project list
     try {
       execSync(`${CLI_PATH} --json project list`, {
+        cwd: testDir,
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          HOME: testDir,
+          USERPROFILE: testDir,
+          MOLTHUB_API_KEY: '',
+        },
+      });
+      throw new Error('Should have failed');
+    } catch (e: any) {
+      const output = `${e.stdout?.toString() || ''}`.trim();
+      const parsed = JSON.parse(output);
+
+      expect(parsed.success).toBe(false);
+      expect(parsed.error.code).toBe('ERR_NO_AUTH');
+    }
+  });
+
+  it('project playbook get requires auth before calling the API', () => {
+    try {
+      execSync(`${CLI_PATH} --json project playbook get --id artifact-1`, {
         cwd: testDir,
         stdio: 'pipe',
         env: {

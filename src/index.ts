@@ -596,6 +596,116 @@ projectActionsCmd.command('execute')
     }
   });
 
+// ==========================================
+// MAINTENANCE COMMANDS
+// ==========================================
+const maintenanceCmd = projectCmd.command('maintenance').description('Grouped artifact maintenance passes');
+
+maintenanceCmd.command('plan')
+  .description('Generate a maintenance plan based on playbook')
+  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .action(async (opts) => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
+    try {
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/maintenance/plan`, {}, { headers: await getHeaders() });
+      printOutput(true, res.data.plan, "Generated maintenance plan");
+    } catch (e) {
+      handleApiError(e, "Failed to generate plan");
+    }
+  });
+
+maintenanceCmd.command('execute')
+  .description('Execute a maintenance run')
+  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .option('--dry-run', 'Dry run only')
+  .action(async (opts) => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
+    try {
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/maintenance/execute`, { dryRun: opts.dryRun }, { headers: await getHeaders() });
+      printOutput(true, res.data, "Maintenance run processed");
+    } catch (e) {
+      handleApiError(e, "Failed to execute maintenance");
+    }
+  });
+
+maintenanceCmd.command('history')
+  .description('Show maintenance run history for an artifact')
+  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .action(async (opts) => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/maintenance-runs`, { headers: await getHeaders() });
+      printOutput(true, res.data.runs, "Fetched maintenance history");
+    } catch (e) {
+      handleApiError(e, "Failed to fetch history");
+    }
+  });
+
+// ==========================================
+// PLAYBOOK COMMANDS
+// ==========================================
+const playbookCmd = projectCmd.command('playbook').description('Manage artifact maintenance playbooks');
+
+playbookCmd.command('get')
+  .description('Get the current playbook configuration')
+  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .action(async (opts) => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/playbook`, { headers: await getHeaders() });
+      printOutput(true, res.data.playbook, "Fetched playbook");
+    } catch (e) {
+      handleApiError(e, "Failed to fetch playbook");
+    }
+  });
+
+playbookCmd.command('set')
+  .description('Update playbook configuration')
+  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .option('--enable', 'Enable playbook')
+  .option('--disable', 'Disable playbook')
+  .option('--max-actions <n>', 'Max actions per run')
+  .option('--direct-actions', 'Allow direct actions')
+  .option('--no-direct-actions', 'Disallow direct actions')
+  .option('--draft-actions', 'Allow draft actions')
+  .option('--no-draft-actions', 'Disallow draft actions')
+  .action(async (opts) => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
+    const payload: any = {};
+    if (opts.enable) payload.isEnabled = true;
+    if (opts.disable) payload.isEnabled = false;
+    if (opts.maxActions) payload.maxActionsPerRun = parseInt(opts.maxActions);
+    if (opts.directActions) payload.directActionsAllowed = true;
+    if (opts.noDirectActions) payload.directActionsAllowed = false;
+    if (opts.draftActions) payload.draftActionsAllowed = true;
+    if (opts.noDraftActions) payload.draftActionsAllowed = false;
+
+    try {
+      const res = await axios.patch(`${BASE_URL}/artifacts/${opts.id}/playbook`, payload, { headers: await getHeaders() });
+      printOutput(true, res.data.playbook, "Updated playbook");
+    } catch (e) {
+      handleApiError(e, "Failed to update playbook");
+    }
+  });
+
+// ==========================================
+// PRODUCTION COMMANDS
+// ==========================================
 const productionCmd = projectCmd.command('production').description('Manage live production state');
 
 productionCmd.command('set')
