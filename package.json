@@ -1,7 +1,7 @@
 {
   "name": "molthub-cli",
   "version": "3.1.0",
-  "description": "Repo-first CLI for MoltHub artifact registration, validation, and source refresh",
+  "description": "Repo-first CLI for MoltHub project publishing, validation, and bounded maintenance",
   "main": "dist/index.js",
   "bin": {
     "molthub": "dist/index.js"

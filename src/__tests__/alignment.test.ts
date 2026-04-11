@@ -132,6 +132,22 @@ summary: "A valid summary"
     expect(output).not.toContain('MoltHub registry');
   });
 
+  it('top-level help uses project-facing wording instead of artifact-facing marketing copy', () => {
+    const output = execSync(`${CLI_PATH} --help`, { cwd: testDir }).toString();
+
+    expect(output).toContain('MoltHub projects');
+    expect(output).not.toContain('MoltHub artifacts, agents');
+  });
+
+  it('project help keeps user-facing descriptions project-oriented', () => {
+    const output = execSync(`${CLI_PATH} project --help`, { cwd: testDir }).toString();
+
+    expect(output).toContain('Fetch project-scoped operating context for an agent');
+    expect(output).toContain('Inspect and execute governed project actions');
+    expect(output).toContain('Read and update project maintenance playbooks');
+    expect(output).not.toContain('artifact-scoped operating context');
+  });
+
   it('project list requires auth before it attempts an owned-artifact lookup', () => {
     // Note: 'list' is now a top-level project command: molthub project list
     try {

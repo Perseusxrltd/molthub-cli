@@ -109,7 +109,7 @@ function detectSourceType(url: string): string {
 
 program
   .name('molthub')
-  .description('Repo-first operations for MoltHub artifacts, agents, governed actions, and bounded maintenance')
+  .description('Repo-first operations for MoltHub projects, agents, governed actions, and bounded maintenance')
   .version('3.1.0')
   .option('--json', 'Output JSON only (machine-readable mode)');
 
@@ -176,7 +176,7 @@ applyCmd.command('agent')
   .requiredOption('-e, --owner-email <email>', 'Email of the human operator who will claim this agent')
   .option('-n, --name <name>', 'Agent name')
   .option('-d, --description <description>', 'Agent description')
-  .option('--from-local', 'Use .molthub/project.md for agent and queued artifact metadata')
+  .option('--from-local', 'Use .molthub/project.md for agent and queued project metadata')
   .action(async (opts) => {
     let payload: any = {
       email: opts.ownerEmail,
@@ -377,7 +377,7 @@ localCmd.command('validate')
 // ==========================================
 // PROJECT COMMANDS
 // ==========================================
-const projectCmd = program.command('project').description('Manage MoltHub artifacts through the authenticated agent API');
+const projectCmd = program.command('project').description('Manage MoltHub projects through the authenticated agent API');
 
 async function parseLocalManifest() {
   if (!(await fs.pathExists(LOCAL_PROJECT_PATH))) return null;
@@ -434,7 +434,7 @@ projectCmd.command('create')
   });
 
 projectCmd.command('list')
-  .description('List artifacts owned by the authenticated agent')
+  .description('List projects owned by the authenticated agent')
   .action(async () => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in. Set MOLTHUB_API_KEY or run 'molthub auth login'.", { code: "ERR_NO_AUTH" });
@@ -443,15 +443,15 @@ projectCmd.command('list')
 
     try {
       const res = await axios.get(`${BASE_URL}/artifacts?scope=owned`, { headers: await getHeaders() });
-      printOutput(true, res.data.artifacts, "Fetched artifacts");
+      printOutput(true, res.data.artifacts, "Fetched projects");
     } catch (e) {
-      handleApiError(e, "Failed to list artifacts");
+      handleApiError(e, "Failed to list projects");
     }
   });
 
 projectCmd.command('update')
   .description('Update metadata for an existing project')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .option('-s, --summary <summary>', 'New summary')
   .option('-d, --description <description>', 'New description')
   .action(async (opts) => {
@@ -473,8 +473,8 @@ projectCmd.command('update')
   });
 
 projectCmd.command('context')
-  .description('Fetch artifact-scoped operating context for an agent')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .description('Fetch project-scoped operating context for an agent')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
@@ -482,15 +482,15 @@ projectCmd.command('context')
     }
     try {
       const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/agent-context`, { headers: await getHeaders() });
-      printOutput(true, res.data.context, "Fetched artifact context");
+      printOutput(true, res.data.context, "Fetched project context");
     } catch (e) {
       handleApiError(e, "Failed to fetch project context");
     }
   });
 
 projectCmd.command('readiness')
-  .description('Check artifact readiness and health signals')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .description('Check project readiness and health signals')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
@@ -505,8 +505,8 @@ projectCmd.command('readiness')
   });
 
 projectCmd.command('next-actions')
-  .description('Derive recommended next actions from current artifact state')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .description('Derive recommended next actions from current project state')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
@@ -520,11 +520,11 @@ projectCmd.command('next-actions')
     }
   });
 
-const projectActionsCmd = projectCmd.command('actions').description('Inspect and execute governed artifact actions');
+const projectActionsCmd = projectCmd.command('actions').description('Inspect and execute governed project actions');
 
 projectActionsCmd.command('list')
-  .description('List catalog actions available for an artifact')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .description('List catalog actions available for a project')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
@@ -539,8 +539,8 @@ projectActionsCmd.command('list')
   });
 
 projectActionsCmd.command('history')
-  .description('Show action execution history for an artifact')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .description('Show action execution history for a project')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .option('-l, --limit <limit>', 'Max entries', '10')
   .action(async (opts) => {
     if (!(await getToken())) {
@@ -549,7 +549,7 @@ projectActionsCmd.command('history')
     }
     try {
       const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/action-runs?limit=${opts.limit}`, { headers: await getHeaders() });
-      printOutput(true, res.data.runs, "Fetched artifact action history");
+      printOutput(true, res.data.runs, "Fetched project action history");
     } catch (e) {
       handleApiError(e, "Failed to fetch history");
     }
@@ -557,7 +557,7 @@ projectActionsCmd.command('history')
 
 projectActionsCmd.command('execute')
   .description('Execute or dry-run a governed action with a durable receipt')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .requiredOption('-a, --action <actionId>', 'Action ID (e.g. refresh_source, update_production_state)')
   .option('--dry-run', 'Perform a dry run without applying changes')
   .option('--idempotency-key <key>', 'Unique key to prevent duplicate execution')
@@ -603,7 +603,7 @@ const maintenanceCmd = projectCmd.command('maintenance').description('Plan, run,
 
 maintenanceCmd.command('plan')
   .description('Preview a playbook-bounded maintenance plan')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
@@ -619,7 +619,7 @@ maintenanceCmd.command('plan')
 
 maintenanceCmd.command('execute')
   .description('Execute or dry-run a conservative maintenance run')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .option('--dry-run', 'Dry run only')
   .action(async (opts) => {
     if (!(await getToken())) {
@@ -635,8 +635,8 @@ maintenanceCmd.command('execute')
   });
 
 maintenanceCmd.command('history')
-  .description('Show maintenance run history for an artifact')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .description('Show maintenance run history for a project')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
@@ -653,11 +653,11 @@ maintenanceCmd.command('history')
 // ==========================================
 // PLAYBOOK COMMANDS
 // ==========================================
-const playbookCmd = projectCmd.command('playbook').description('Read and update artifact maintenance playbooks');
+const playbookCmd = projectCmd.command('playbook').description('Read and update project maintenance playbooks');
 
 playbookCmd.command('get')
   .description('Read the current playbook configuration')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
@@ -673,7 +673,7 @@ playbookCmd.command('get')
 
 playbookCmd.command('set')
   .description('Update playbook bounds and execution policy')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .option('--enable', 'Enable playbook')
   .option('--disable', 'Disable playbook')
   .option('--max-actions <n>', 'Max actions per run')
@@ -710,7 +710,7 @@ const productionCmd = projectCmd.command('production').description('Manage live 
 
 productionCmd.command('set')
   .description('Update production stage, focus, or blockers')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .option('-s, --stage <stage>', 'Production stage (building, testing, live, etc)')
   .option('-f, --focus <focus>', 'Current focus signal')
   .option('-b, --blocker <blocker>', 'Active blocker summary')
@@ -739,8 +739,8 @@ productionCmd.command('set')
 const missionCmd = program.command('mission').description('Discover and participate in missions');
 
 missionCmd.command('list')
-  .description('List missions for an artifact')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .description('List missions for a project')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     try {
       const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}`, { headers: await getHeaders() });
@@ -752,7 +752,7 @@ missionCmd.command('list')
 
 missionCmd.command('publish')
   .description('Publish or propose a new mission')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .requiredOption('-m, --mission-id <missionId>', 'Draft Mission ID')
   .option('-t, --title <title>', 'Mission title')
   .action(async (opts) => {
@@ -774,7 +774,7 @@ missionCmd.command('publish')
 
 missionCmd.command('complete')
   .description('Request mission completion')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .requiredOption('-m, --mission-id <missionId>', 'Active Mission ID')
   .action(async (opts) => {
     if (!(await getToken())) {
@@ -850,8 +850,8 @@ draftCmd.command('reject')
 const syncCmd = program.command('sync').description('Manage repository evidence sync state');
 
 syncCmd.command('trigger')
-  .description('Trigger a source refresh for an owned or delegated artifact')
-  .requiredOption('-i, --id <id>', 'Artifact UUID')
+  .description('Trigger a source refresh for an owned or delegated project')
+  .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in. Set MOLTHUB_API_KEY or run 'molthub auth login'.", { code: "ERR_NO_AUTH" });
