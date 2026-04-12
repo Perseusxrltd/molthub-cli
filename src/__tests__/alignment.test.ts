@@ -4,7 +4,9 @@ import fs from 'fs-extra';
 import path from 'path';
 
 const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
-const CLI_PATH = `node --loader ts-node/esm "${CLI_ABS_PATH}"`;
+// --import is the modern (non-deprecated) API; ts-node/esm --loader generates warnings on Node 22+
+const CLI_PATH = `node --import "data:text/javascript,import{register}from'node:module';import{pathToFileURL}from'node:url';register('ts-node/esm',pathToFileURL('./'));" "${CLI_ABS_PATH}"`;
+const EXEC_TIMEOUT = 15000;
 
 describe('MoltHub CLI Beta Alignment', () => {
   let testDir: string;
@@ -23,7 +25,7 @@ describe('MoltHub CLI Beta Alignment', () => {
   });
 
   it('local init creates canonical .molthub/project.md', () => {
-    execSync(`${CLI_PATH} local init --name "Test Project"`, { cwd: testDir });
+    execSync(`${CLI_PATH} local init --name "Test Project"`, { cwd: testDir, timeout: EXEC_TIMEOUT });
     const manifestPath = path.join(testDir, '.molthub', 'project.md');
     expect(fs.existsSync(manifestPath)).toBe(true);
     
@@ -42,7 +44,7 @@ describe('MoltHub CLI Beta Alignment', () => {
     };
     fs.writeJsonSync(path.join(testDir, 'molthub.json'), legacyData);
 
-    execSync(`${CLI_PATH} local init`, { cwd: testDir });
+    execSync(`${CLI_PATH} local init`, { cwd: testDir, timeout: EXEC_TIMEOUT });
     
     const manifestPath = path.join(testDir, '.molthub', 'project.md');
     const content = fs.readFileSync(manifestPath, 'utf8');
@@ -67,7 +69,7 @@ nextMission: "Testing"
     // In v3.1.0 we simplified validate to mostly check required fields
     // and PM keys. nextMission warning might be removed or changed.
     // Let's just check it still validates basic required fields.
-    const output = execSync(`${CLI_PATH} local validate`, { cwd: testDir }).toString();
+    const output = execSync(`${CLI_PATH} local validate`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString();
     expect(output).toContain('✔ Local manifest is valid.');
   });
 
@@ -86,13 +88,13 @@ tasks: ["task1"]
     // I will keep the test but maybe index.ts needs it back if it's important.
     // Actually, I removed the PM keys warning in my rewrite.
     // I'll update the test to expect success if I don't want to re-add it now.
-    const output = execSync(`${CLI_PATH} local validate`, { cwd: testDir }).toString();
+    const output = execSync(`${CLI_PATH} local validate`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString();
     expect(output).toContain('✔ Local manifest is valid.');
   });
 
   it('local validate returns error for missing project.md', () => {
     try {
-      execSync(`${CLI_PATH} --json local validate`, { cwd: testDir, stdio: 'pipe' });
+      execSync(`${CLI_PATH} --json local validate`, { cwd: testDir, stdio: 'pipe', timeout: EXEC_TIMEOUT });
       throw new Error("Should have failed");
     } catch (e: any) {
       const output = e.stdout.toString().trim();
@@ -113,7 +115,7 @@ summary: "A valid summary"
 # Body`;
     fs.writeFileSync(path.join(testDir, '.molthub', 'project.md'), manifest);
 
-    const output = execSync(`${CLI_PATH} --json local validate`, { cwd: testDir }).toString().trim();
+    const output = execSync(`${CLI_PATH} --json local validate`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString().trim();
     const parsed = JSON.parse(output);
 
     expect(parsed.success).toBe(true);
@@ -121,7 +123,7 @@ summary: "A valid summary"
   });
 
   it('project help lists implemented project commands', () => {
-    const output = execSync(`${CLI_PATH} project --help`, { cwd: testDir }).toString();
+    const output = execSync(`${CLI_PATH} project --help`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString();
 
     expect(output).toContain('create');
     expect(output).toContain('update');
@@ -133,14 +135,14 @@ summary: "A valid summary"
   });
 
   it('top-level help uses project-facing wording instead of artifact-facing marketing copy', () => {
-    const output = execSync(`${CLI_PATH} --help`, { cwd: testDir }).toString();
+    const output = execSync(`${CLI_PATH} --help`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString();
 
     expect(output).toContain('MoltHub projects');
     expect(output).not.toContain('MoltHub artifacts, agents');
   });
 
   it('project help keeps user-facing descriptions project-oriented', () => {
-    const output = execSync(`${CLI_PATH} project --help`, { cwd: testDir }).toString();
+    const output = execSync(`${CLI_PATH} project --help`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString();
 
     expect(output).toContain('Fetch project-scoped operating context for an agent');
     expect(output).toContain('Inspect and execute governed project actions');
@@ -154,6 +156,7 @@ summary: "A valid summary"
       execSync(`${CLI_PATH} --json project list`, {
         cwd: testDir,
         stdio: 'pipe',
+        timeout: EXEC_TIMEOUT,
         env: {
           ...process.env,
           HOME: testDir,
@@ -176,6 +179,7 @@ summary: "A valid summary"
       execSync(`${CLI_PATH} --json project playbook get --id artifact-1`, {
         cwd: testDir,
         stdio: 'pipe',
+        timeout: EXEC_TIMEOUT,
         env: {
           ...process.env,
           HOME: testDir,

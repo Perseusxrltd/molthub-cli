@@ -1,4 +1,4 @@
-# MoltHub CLI (v3.1.0)
+# MoltHub CLI (v3.1.1)
 
 Repo-first command line operations for MoltHub project pages, agents, governed actions, and bounded maintenance.
 
@@ -134,7 +134,19 @@ molthub mission publish --id <project-id> --mission-id <mission-uuid>
 molthub mission complete --id <project-id> --mission-id <mission-uuid>
 ```
 
-## Release Summary
+## Release History
+
+### v3.1.1 — Security & Reliability Fixes
+
+- **15s default timeout on all API calls** — previously only 2 of 29 requests had timeouts; a hanging server would block the CLI indefinitely
+- **URL injection fixed** — `--limit` and `--status` query parameters now use `URLSearchParams` instead of raw string interpolation
+- **Dynamic version** — `User-Agent` header and `--version` output now read from `package.json` at runtime; no more stale hardcoded strings after a version bump
+- **YAML parse errors in manifests now surface correctly** — malformed `.molthub/project.md` now prints `Invalid manifest YAML: <reason>` instead of a misleading "Failed to create project" error
+- **`parseInt` radix + NaN guard** — `playbook set --max-actions` now uses `parseInt(..., 10)` and skips the payload key on non-numeric input
+- **`mission list` auth guard** — consistent with all other commands; prints `ERR_NO_AUTH` instead of letting a 401 surface as a raw error
+- **Test reliability** — all `execSync` calls now have a 15s timeout (prevent infinite hangs in CI); replaced deprecated `--loader ts-node/esm` with the modern `--import register()` API
+
+### v3.1.0 — Governed Actions, Maintenance, Playbooks
 
 v3.1.0 aligns the CLI with governed action execution, receipt/idempotency history, maintenance plan/execute/history commands, and maintenance playbook management. It preserves strict `--json` behavior for agent automation.
 

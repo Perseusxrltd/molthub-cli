@@ -1,6 +1,6 @@
 {
   "name": "molthub-cli",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "Repo-first CLI for MoltHub project publishing, validation, and bounded maintenance",
   "main": "dist/index.js",
   "bin": {

@@ -3,11 +3,20 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import yaml from 'js-yaml';
 
 dotenv.config({ quiet: true });
+
+// Read version from package.json once at startup (single source of truth)
+const _pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+const PKG_VERSION: string = (JSON.parse(readFileSync(_pkgPath, 'utf8')) as { version: string }).version;
+
+// Default timeout for all API calls — prevents CLI from hanging on unresponsive server
+axios.defaults.timeout = 15000;
 
 const program = new Command();
 const CONFIG_PATH = path.join(process.env.HOME || process.env.USERPROFILE || '', '.molthub-cli.json');
@@ -93,7 +102,7 @@ const getHeaders = async (extra: Record<string, string> = {}) => {
   const token = await getToken();
   return {
     ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-    'User-Agent': 'MoltHub-CLI/3.1.0',
+    'User-Agent': `MoltHub-CLI/${PKG_VERSION}`,
     ...extra
   };
 };
@@ -110,7 +119,7 @@ function detectSourceType(url: string): string {
 program
   .name('molthub')
   .description('Repo-first operations for MoltHub projects, agents, governed actions, and bounded maintenance')
-  .version('3.1.0')
+  .version(PKG_VERSION)
   .option('--json', 'Output JSON only (machine-readable mode)');
 
 // ==========================================
@@ -145,7 +154,8 @@ agentCmd.command('activity')
   .option('-l, --limit <limit>', 'Max entries', '10')
   .action(async (opts) => {
     try {
-      const res = await axios.get(`${BASE_URL}/agent/activity?limit=${opts.limit}`, { headers: await getHeaders() });
+      const params = new URLSearchParams({ limit: opts.limit });
+      const res = await axios.get(`${BASE_URL}/agent/activity?${params}`, { headers: await getHeaders() });
       printOutput(true, res.data.activity, "Fetched recent activity");
     } catch (e) {
       handleApiError(e, "Failed to fetch activity");
@@ -158,7 +168,9 @@ agentCmd.command('runs')
   .option('-s, --status <status>', 'Filter by status')
   .action(async (opts) => {
     try {
-      const url = `${BASE_URL}/agent/action-runs?limit=${opts.limit}${opts.status ? `&status=${opts.status}` : ''}`;
+      const qp: Record<string, string> = { limit: opts.limit };
+      if (opts.status) qp.status = opts.status;
+      const url = `${BASE_URL}/agent/action-runs?${new URLSearchParams(qp)}`;
       const res = await axios.get(url, { headers: await getHeaders() });
       printOutput(true, res.data.runs, "Fetched agent action runs");
     } catch (e) {
@@ -384,9 +396,14 @@ async function parseLocalManifest() {
   const content = await fs.readFile(LOCAL_PROJECT_PATH, 'utf8');
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return null;
-  const meta = yaml.load(match[1]) as any;
-  const description = content.replace(/^---\r?\n([\s\S]*?)\r?\n---/, '').trim();
-  return { ...meta, description };
+  try {
+    const meta = yaml.load(match[1]) as any;
+    const description = content.replace(/^---\r?\n([\s\S]*?)\r?\n---/, '').trim();
+    return { ...meta, description };
+  } catch (e: any) {
+    printOutput(false, null, `Invalid manifest YAML: ${e.message}`, { code: 'ERR_PARSE_ERROR' });
+    process.exit(1);
+  }
 }
 
 projectCmd.command('create')
@@ -548,7 +565,7 @@ projectActionsCmd.command('history')
       process.exit(1);
     }
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/action-runs?limit=${opts.limit}`, { headers: await getHeaders() });
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/action-runs?${new URLSearchParams({ limit: opts.limit })}`, { headers: await getHeaders() });
       printOutput(true, res.data.runs, "Fetched project action history");
     } catch (e) {
       handleApiError(e, "Failed to fetch history");
@@ -689,7 +706,10 @@ playbookCmd.command('set')
     const payload: any = {};
     if (opts.enable) payload.isEnabled = true;
     if (opts.disable) payload.isEnabled = false;
-    if (opts.maxActions) payload.maxActionsPerRun = parseInt(opts.maxActions);
+    if (opts.maxActions) {
+      const n = parseInt(opts.maxActions, 10);
+      if (!Number.isNaN(n)) payload.maxActionsPerRun = n;
+    }
     if (opts.directActions === true) payload.directActionsAllowed = true;
     if (opts.directActions === false) payload.directActionsAllowed = false;
     if (opts.draftActions === true) payload.draftActionsAllowed = true;
@@ -742,6 +762,10 @@ missionCmd.command('list')
   .description('List missions for a project')
   .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in. Set MOLTHUB_API_KEY or run 'molthub auth login'.", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
     try {
       const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}`, { headers: await getHeaders() });
       printOutput(true, res.data.missions || [], "Fetched missions");
@@ -805,7 +829,7 @@ draftCmd.command('list')
     }
 
     try {
-      const res = await axios.get(`${BASE_URL}/agent/drafts?status=${opts.status}`, { headers: await getHeaders() });
+      const res = await axios.get(`${BASE_URL}/agent/drafts?${new URLSearchParams({ status: opts.status })}`, { headers: await getHeaders() });
       printOutput(true, res.data.drafts, `Fetched agent drafts (${opts.status})`);
     } catch (e) {
       handleApiError(e, "Failed to list drafts");
