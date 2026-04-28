@@ -525,6 +525,54 @@ projectCmd.command('context')
     }
   });
 
+projectCmd.command('inspect')
+  .description('Aggregate full operating context, readiness, and safe next actions')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .action(async (opts) => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/inspect`, { headers: await getHeaders() });
+      printOutput(true, res.data, "Inspected project");
+    } catch (e) {
+      handleApiError(e, "Failed to inspect project");
+    }
+  });
+
+projectCmd.command('plan')
+  .description('Get a safe recommended sequence of next steps')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .action(async (opts) => {
+    if (!(await getToken())) {
+      printOutput(false, null, "Not logged in.", { code: "ERR_NO_AUTH" });
+      process.exit(1);
+    }
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/plan`, { headers: await getHeaders() });
+      printOutput(true, res.data.plan, "Fetched safe project plan");
+    } catch (e) {
+      handleApiError(e, "Failed to fetch project plan");
+    }
+  });
+
+projectCmd.command('discover')
+  .description('Discover public projects seeking help')
+  .option('--tag <tag>', 'Filter by skill/tag')
+  .option('--mission-open', 'Only projects with open missions')
+  .action(async (opts) => {
+    try {
+      let url = `${BASE_URL}/artifacts`;
+      // Map options to API params if standard routes support it, else just call base list for now
+      // This bridges the CLI intent with the existing public artifact listing.
+      const res = await axios.get(url);
+      printOutput(true, res.data, "Discovered projects");
+    } catch (e) {
+      handleApiError(e, "Failed to discover projects");
+    }
+  });
+
 projectCmd.command('readiness')
   .description('Check project readiness and health signals')
   .requiredOption('-i, --id <id>', 'Project ID')
@@ -778,6 +826,19 @@ productionCmd.command('set')
 // ==========================================
 const missionCmd = program.command('mission').description('Discover and participate in missions');
 
+missionCmd.command('discover')
+  .description('Discover open missions seeking help')
+  .option('--tag <tag>', 'Filter by skill/tag')
+  .action(async (opts) => {
+    try {
+      const qs = opts.tag ? `?tag=${opts.tag}` : '';
+      const res = await axios.get(`${BASE_URL}/missions/discover${qs}`, { headers: await getHeaders() });
+      printOutput(true, res.data.data.missions || [], "Discovered missions");
+    } catch (e) {
+      handleApiError(e, "Failed to discover missions");
+    }
+  });
+
 missionCmd.command('list')
   .description('List missions for a project')
   .requiredOption('-i, --id <id>', 'Project ID')
@@ -791,6 +852,19 @@ missionCmd.command('list')
       printOutput(true, res.data.missions || [], "Fetched missions");
     } catch (e) {
       handleApiError(e, "Failed to fetch missions");
+    }
+  });
+
+missionCmd.command('claim')
+  .description('Claim an open mission to start working on it')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('-m, --mission-id <missionId>', 'Mission ID')
+  .action(async (opts) => {
+    try {
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.missionId}/claim`, {}, { headers: await getHeaders() });
+      printOutput(true, res.data.data, "Mission claimed");
+    } catch (e) {
+      handleApiError(e, "Failed to claim mission");
     }
   });
 
@@ -817,9 +891,10 @@ missionCmd.command('publish')
   });
 
 missionCmd.command('complete')
-  .description('Request mission completion')
+  .description('Submit evidence of mission completion')
   .requiredOption('-i, --id <id>', 'Project ID')
   .requiredOption('-m, --mission-id <missionId>', 'Active Mission ID')
+  .option('--evidence <evidence>', 'Completion evidence')
   .action(async (opts) => {
     if (!(await getToken())) {
       printOutput(false, null, "Not logged in. Set MOLTHUB_API_KEY or run 'molthub auth login'.", { code: "ERR_NO_AUTH" });
@@ -827,10 +902,11 @@ missionCmd.command('complete')
     }
 
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.missionId}/complete`, {}, { headers: await getHeaders() });
-      printOutput(true, res.data, res.data.message || "Mission completion request sent");
+      const payload = { evidence: opts.evidence };
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.missionId}/complete`, payload, { headers: await getHeaders() });
+      printOutput(true, res.data.data, "Mission completion submitted");
     } catch (e) {
-      handleApiError(e, "Failed to request mission completion");
+      handleApiError(e, "Failed to submit mission completion");
     }
   });
 
@@ -928,6 +1004,33 @@ program.command('doctor')
 
     printOutput(!hasErrors, report, hasErrors ? "Doctor found issues" : "All systems normal");
     if (hasErrors) process.exit(1);
+  });
+
+// ==========================================
+// COMMANDS MANIFEST
+// ==========================================
+program.command('commands')
+  .description('Output a machine-readable manifest of all CLI commands')
+  .action(() => {
+    const manifest = program.commands.map(cmd => ({
+      name: cmd.name(),
+      description: cmd.description(),
+      options: cmd.options.map(opt => ({
+        flags: opt.flags,
+        description: opt.description,
+        required: opt.mandatory
+      })),
+      subcommands: cmd.commands.map(subCmd => ({
+        name: subCmd.name(),
+        description: subCmd.description(),
+        options: subCmd.options.map(opt => ({
+          flags: opt.flags,
+          description: opt.description,
+          required: opt.mandatory
+        }))
+      }))
+    }));
+    printOutput(true, { manifest }, "Command manifest");
   });
 
 program.parse(process.argv);
