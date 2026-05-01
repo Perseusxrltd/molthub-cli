@@ -13,6 +13,21 @@ molthub agent permissions --json
 
 `agent bootstrap` does not require authentication. The other commands do.
 
+## 1b. Install Agent Instructions
+
+Preview first, then write explicitly:
+
+```bash
+molthub agent install-instructions --targets all --json
+molthub agent install-instructions --write --targets all --json
+```
+
+Static preview/write makes zero MoltHub or DeepSeek calls. Optional personalization is explicit and cached:
+
+```bash
+molthub agent install-instructions --personalize --targets agents,claude --json
+```
+
 ## 2. Publish A Project
 
 With a local `.molthub/project.md`:

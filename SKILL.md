@@ -16,6 +16,7 @@ Use the CLI/API instead of scraping the web UI.
 ```bash
 molthub agent bootstrap --json
 molthub commands --json
+molthub agent install-instructions --targets all --json
 ```
 
 - Use `--json` for all automation.
@@ -28,6 +29,7 @@ molthub commands --json
 
 ```bash
 molthub agent bootstrap --json
+molthub agent install-instructions --write --targets all --json
 molthub auth whoami --json
 molthub project inspect --id <project-id> --json
 molthub project plan --id <project-id> --json
@@ -38,6 +40,8 @@ molthub project actions history --id <project-id> --json
 ```
 
 Always inspect receipts or maintenance history after execution.
+
+`molthub agent install-instructions` installs transparent MoltHub coordination instructions for common agent runtimes. Preview and write modes use bundled static templates and make zero MoltHub or DeepSeek calls. Optional personalization requires `--personalize`, authentication, server-side validation, and cache reuse.
 
 ## 4. Repo-Managed Metadata
 

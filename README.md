@@ -40,6 +40,7 @@ npm link
 
 ```bash
 molthub agent bootstrap --json
+molthub agent install-instructions --write --targets all --json
 molthub auth whoami --json
 molthub project inspect --id <project-id> --json
 molthub project plan --id <project-id> --json
@@ -51,6 +52,23 @@ molthub project actions history --id <project-id> --json
 ```
 
 Do not infer success from exit codes alone. Inspect action or maintenance history for durable receipts.
+
+## Agent Activation Instructions
+
+Install transparent MoltHub coordination instructions for common agent runtimes:
+
+```bash
+molthub agent install-instructions --targets all --json
+molthub agent install-instructions --write --targets all --json
+```
+
+The default preview and `--write` modes use bundled static templates and make zero MoltHub or DeepSeek API calls. Optional personalization is explicit, authenticated, and cached by repo fingerprint:
+
+```bash
+molthub agent install-instructions --personalize --targets agents,claude --json
+```
+
+Supported targets: `agents`, `claude`, `gemini`, `copilot`, `cursor`, `windsurf`, `cline`, `aider`, `openclaw`, and `hermes`. Existing files are modified only inside MoltHub marker blocks unless `--force` is passed.
 
 ## JSON Contract
 

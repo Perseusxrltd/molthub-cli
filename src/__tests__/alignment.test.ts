@@ -139,6 +139,137 @@ tasks: ["task1"]
     expect(parsed.data.auth.envVar).toBe('MOLTHUB_API_KEY');
   });
 
+  it('agent install-instructions previews activation files without writing', () => {
+    const output = execSync(`${CLI_PATH} --json agent install-instructions --targets agents,claude`, {
+      cwd: testDir,
+      timeout: EXEC_TIMEOUT,
+      env: emptyAuthEnv(testDir),
+    }).toString().trim();
+    const parsed = JSON.parse(output);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.mode).toBe('preview');
+    expect(parsed.data.personalized).toBe(false);
+    expect(parsed.data.files.map((file: any) => file.path)).toEqual(['AGENTS.md', 'CLAUDE.md']);
+    expect(fs.existsSync(path.join(testDir, 'AGENTS.md'))).toBe(false);
+    expect(fs.existsSync(path.join(testDir, 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('agent install-instructions writes static activation files without auth or network', () => {
+    const output = execSync(`${CLI_PATH} --json agent install-instructions --write --targets agents`, {
+      cwd: testDir,
+      timeout: EXEC_TIMEOUT,
+      env: emptyAuthEnv(testDir),
+    }).toString().trim();
+    const parsed = JSON.parse(output);
+    const agentsPath = path.join(testDir, 'AGENTS.md');
+    const content = fs.readFileSync(agentsPath, 'utf8');
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.mode).toBe('write');
+    expect(parsed.data.files[0].action).toBe('created');
+    expect(content).toContain('<!-- MOLTHUB:START -->');
+    expect(content).toContain('molthub agent bootstrap --json');
+    expect(content).toContain('Do not log, print, commit, or transmit API keys');
+  });
+
+  it('agent install-instructions refuses to modify unmarked files without force', () => {
+    const agentsPath = path.join(testDir, 'AGENTS.md');
+    fs.writeFileSync(agentsPath, '# Existing Rules\n\nDo not replace this.\n');
+
+    try {
+      execSync(`${CLI_PATH} --json agent install-instructions --write --targets agents`, {
+        cwd: testDir,
+        stdio: 'pipe',
+        timeout: EXEC_TIMEOUT,
+        env: emptyAuthEnv(testDir),
+      });
+      throw new Error('Should have failed');
+    } catch (e: any) {
+      const parsed = JSON.parse(`${e.stdout?.toString() || ''}`.trim());
+      expect(parsed.success).toBe(false);
+      expect(parsed.error.code).toBe('ERR_INSTRUCTION_FILE_EXISTS');
+      expect(fs.readFileSync(agentsPath, 'utf8')).toBe('# Existing Rules\n\nDo not replace this.\n');
+    }
+  });
+
+  it('agent install-instructions requires auth before personalized generation', () => {
+    expectNoAuth('agent install-instructions --personalize --targets agents --json', testDir);
+  });
+
+  it('agent install-instructions personalizes once and reuses the fingerprint cache', async () => {
+    const port = 41000 + Math.floor(Math.random() * 2000);
+    const countPath = path.join(testDir, 'activation-count.txt');
+    const bodyPath = path.join(testDir, 'activation-body.json');
+    fs.writeFileSync(countPath, '0');
+
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const fs = require('fs');
+      const port = Number(process.argv[1]);
+      const countPath = process.argv[2];
+      const bodyPath = process.argv[3];
+      http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          fs.writeFileSync(bodyPath, body);
+          const count = Number(fs.readFileSync(countPath, 'utf8') || '0') + 1;
+          fs.writeFileSync(countPath, String(count));
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            data: {
+              files: [{
+                target: 'agents',
+                path: 'AGENTS.md',
+                content: '<!-- MOLTHUB:START -->\\n# Personalized MoltHub\\nRun \`molthub agent bootstrap --json\`.\\n<!-- MOLTHUB:END -->\\n'
+              }]
+            }
+          }));
+        });
+      }).listen(port, '127.0.0.1', () => console.log('READY'));
+    `, String(port), countPath, bodyPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      const env = emptyAuthEnv(testDir, {
+        MOLTHUB_API_KEY: 'mh_live_test_token',
+        MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+      });
+
+      const firstOutput = execSync(`${CLI_PATH} --json agent install-instructions --personalize --targets agents`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim();
+      const first = JSON.parse(firstOutput);
+
+      const secondOutput = execSync(`${CLI_PATH} --json agent install-instructions --personalize --targets agents`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim();
+      const second = JSON.parse(secondOutput);
+      const sentBody = JSON.parse(fs.readFileSync(bodyPath, 'utf8'));
+
+      expect(first.data.personalized).toBe(true);
+      expect(first.data.cacheHit).toBe(false);
+      expect(second.data.personalized).toBe(true);
+      expect(second.data.cacheHit).toBe(true);
+      expect(fs.readFileSync(countPath, 'utf8')).toBe('1');
+      expect(sentBody).toMatchObject({
+        templateVersion: '2026-05-02-v1',
+        cliVersion: '3.2.0',
+        targets: ['agents'],
+        manifestHash: 'missing',
+      });
+      expect(JSON.stringify(sentBody)).not.toContain('mh_live_test_token');
+    } finally {
+      server.kill();
+    }
+  }, 30000);
+
   it('AGENTS.md exists and contains essential automation rules', () => {
     const agentsPath = path.join(process.cwd(), 'AGENTS.md');
     expect(fs.existsSync(agentsPath)).toBe(true);

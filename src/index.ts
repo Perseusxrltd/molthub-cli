@@ -9,6 +9,16 @@ import { randomUUID } from 'crypto';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import yaml from 'js-yaml';
+import {
+  ACTIVATION_TEMPLATE_VERSION,
+  activationCacheKey,
+  buildStaticActivationFiles,
+  computeLocalManifestHash,
+  parseActivationTargets,
+  planActivationFileWrites,
+  sanitizePersonalizedFiles,
+  type ActivationFile,
+} from './activation-pack.js';
 
 dotenv.config({ quiet: true });
 
@@ -23,6 +33,7 @@ const program = new Command();
 const CONFIG_PATH = path.join(process.env.HOME || process.env.USERPROFILE || '', '.molthub-cli.json');
 const LOCAL_PROJECT_PATH = path.join(process.cwd(), '.molthub', 'project.md');
 const LEGACY_PROJECT_PATH = path.join(process.cwd(), 'molthub.json');
+const ACTIVATION_CACHE_PATH = path.join(process.cwd(), '.molthub', 'activation-cache.json');
 
 // Helper to determine if we are in JSON mode
 function isJsonMode() {
@@ -240,6 +251,117 @@ agentCmd.command('bootstrap')
       ],
       commandManifest: buildCommandManifest()
     }, "Bootstrapped MoltHub agent operating context");
+  });
+
+agentCmd.command('install-instructions')
+  .description('Preview or install safe MoltHub activation instructions for agent runtimes')
+  .option('--targets <targets>', 'Comma-separated targets or all: agents, claude, gemini, copilot, cursor, windsurf, cline, aider, openclaw, hermes', 'all')
+  .option('--write', 'Write files. Without this flag, only preview planned changes')
+  .option('--force', 'Append MoltHub marker blocks to existing unmarked files')
+  .option('--personalize', 'Request one authenticated server-brokered activation pack, cached by repo fingerprint')
+  .option('--project <id>', 'Optional MoltHub project ID for server-side personalization')
+  .action(async (opts) => {
+    let targets;
+    try {
+      targets = parseActivationTargets(opts.targets);
+    } catch (error: any) {
+      printOutput(false, null, error.message, { code: 'ERR_INVALID_TARGETS' });
+      process.exit(1);
+    }
+
+    const manifestHash = await computeLocalManifestHash(process.cwd());
+    const cacheKey = activationCacheKey({
+      cliVersion: PKG_VERSION,
+      manifestHash,
+      targets,
+      projectId: opts.project,
+    });
+
+    let files: ActivationFile[] = buildStaticActivationFiles(targets);
+    let personalized = false;
+    let cacheHit = false;
+    let personalizationWarning: string | null = null;
+
+    if (opts.personalize) {
+      let cachedPack: any = null;
+      if (await fs.pathExists(ACTIVATION_CACHE_PATH)) {
+        try {
+          const cache = await fs.readJson(ACTIVATION_CACHE_PATH);
+          if (cache?.cacheKey === cacheKey) cachedPack = cache;
+        } catch {
+          cachedPack = null;
+        }
+      }
+
+      const cachedFiles = cachedPack ? sanitizePersonalizedFiles(targets, cachedPack.files) : null;
+      if (cachedFiles) {
+        files = cachedFiles;
+        personalized = true;
+        cacheHit = true;
+      } else {
+        await requireToken();
+        try {
+          const res = await axios.post(`${BASE_URL}/agent/activation-pack`, {
+            templateVersion: ACTIVATION_TEMPLATE_VERSION,
+            cliVersion: PKG_VERSION,
+            targets,
+            projectId: opts.project,
+            manifestHash,
+          }, { headers: await getHeaders(), timeout: 15000 });
+
+          const responsePayload = res.data?.data ?? res.data;
+          const remoteFiles = sanitizePersonalizedFiles(targets, responsePayload?.files);
+          if (remoteFiles) {
+            files = remoteFiles;
+            personalized = true;
+            await fs.ensureDir(path.dirname(ACTIVATION_CACHE_PATH));
+            await fs.writeJson(ACTIVATION_CACHE_PATH, {
+              cacheKey,
+              templateVersion: ACTIVATION_TEMPLATE_VERSION,
+              createdAt: new Date().toISOString(),
+              files,
+            }, { spaces: 2 });
+          } else {
+            personalizationWarning = 'Server personalization returned an invalid pack; used static templates.';
+          }
+        } catch (error: any) {
+          const normalized = normalizeApiError(error, 'Failed to personalize activation pack');
+          personalizationWarning = `${normalized.code}: ${normalized.message}. Used static templates.`;
+        }
+      }
+    }
+
+    const planned = await planActivationFileWrites(process.cwd(), files, {
+      write: Boolean(opts.write),
+      force: Boolean(opts.force),
+    });
+
+    if (opts.write && planned.blocked.length > 0) {
+      printOutput(false, {
+        mode: 'write',
+        personalized,
+        cacheHit,
+        blocked: planned.blocked.map((file) => ({ target: file.target, path: file.path, action: file.action })),
+      }, 'Existing instruction files require --force or MoltHub marker blocks.', {
+        code: 'ERR_INSTRUCTION_FILE_EXISTS',
+        details: planned.blocked.map((file) => file.path),
+      });
+      process.exit(1);
+    }
+
+    printOutput(true, {
+      mode: opts.write ? 'write' : 'preview',
+      templateVersion: ACTIVATION_TEMPLATE_VERSION,
+      personalized,
+      cacheHit,
+      personalizationWarning,
+      files: planned.files.map((file) => ({
+        target: file.target,
+        path: file.path,
+        action: file.action,
+        content: opts.write ? undefined : file.content,
+      })),
+    }, opts.write ? 'Installed MoltHub activation instructions' : 'Previewed MoltHub activation instructions');
   });
 
 agentCmd.command('permissions')
