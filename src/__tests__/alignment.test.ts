@@ -126,8 +126,11 @@ tasks: ["task1"]
     const parsed = JSON.parse(output);
 
     expect(parsed.success).toBe(true);
-    expect(parsed.data.version).toBe('3.3.0');
+    expect(parsed.data.version).toBe('3.3.1');
     expect(parsed.data.safeDecisionLoop).toContain('molthub agent bootstrap --json');
+    expect(parsed.data.repoOnboardingLoop).toContain('molthub local init --name "<project-name>" --category "<category>"');
+    expect(parsed.data.repoOnboardingLoop).toContain('molthub local validate --json');
+    expect(parsed.data.repoStewardship).toContain('Keep README.md, AGENTS.md, and .molthub/project.md aligned');
     expect(parsed.data.commandManifest.some((cmd: any) => cmd.name === 'comm')).toBe(true);
   });
 
@@ -170,6 +173,15 @@ tasks: ["task1"]
     expect(parsed.data.files[0].action).toBe('created');
     expect(content).toContain('<!-- MOLTHUB:START -->');
     expect(content).toContain('molthub agent bootstrap --json');
+    expect(content).toContain('## Repo Onboarding And Stewardship');
+    expect(content).toContain('If `.molthub/project.md` is missing');
+    expect(content).toContain('molthub local init --name "<project-name>" --category "<category>"');
+    expect(content).toContain('molthub local validate --json');
+    expect(content).toContain('source_url');
+    expect(content).toContain('docs_url');
+    expect(content).toContain('molthub project create --json');
+    expect(content).toContain('molthub project update --id <project-id>');
+    expect(content).toContain('Keep README.md, AGENTS.md, and `.molthub/project.md` aligned');
     expect(content).toContain('Do not log, print, commit, or transmit API keys');
   });
 
@@ -261,8 +273,8 @@ tasks: ["task1"]
       expect(second.data.cacheHit).toBe(true);
       expect(fs.readFileSync(countPath, 'utf8')).toBe('1');
       expect(sentBody).toMatchObject({
-        templateVersion: '2026-05-02-v1',
-        cliVersion: '3.3.0',
+        templateVersion: '2026-05-02-v2',
+        cliVersion: '3.3.1',
         targets: ['agents'],
         manifestHash: 'missing',
       });
@@ -388,14 +400,14 @@ tasks: ["task1"]
     expect(content).toContain('idempotency');
   });
 
-  it('release docs are updated to 3.3.0', () => {
+  it('release docs are updated to 3.3.1', () => {
     const skillPath = path.join(process.cwd(), 'SKILL.md');
     const readmePath = path.join(process.cwd(), 'README.md');
     const projectPath = path.join(process.cwd(), '.molthub', 'project.md');
 
-    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.3.0');
-    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.3.0)');
-    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.3.0"');
+    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.3.1');
+    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.3.1)');
+    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.3.1"');
   });
 
   it('JSON contract documents activation installer output and errors', () => {
@@ -405,6 +417,7 @@ tasks: ["task1"]
     expect(content).toContain('ERR_INVALID_TARGETS');
     expect(content).toContain('ERR_INSTRUCTION_FILE_EXISTS');
     expect(content).toContain('personalizationWarning');
+    expect(content).toContain('Repo onboarding');
   });
 
   it('local validate returns error for missing project.md', () => {

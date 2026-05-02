@@ -55,14 +55,14 @@ Some commands include extra metadata, for example the generated idempotency key 
 
 ## Agent Instruction Installer
 
-`molthub agent install-instructions --json` previews transparent setup-only instruction files without writing. Static preview/write makes zero MoltHub or DeepSeek API calls.
+`molthub agent install-instructions --json` previews transparent setup-only instruction files without writing. Static preview/write makes zero MoltHub or DeepSeek API calls. The static content includes a detailed agent playbook covering MoltHub purpose, safe command discovery, Repo onboarding, `.molthub/project.md` stewardship, docs alignment, communication, missions, governed actions, and receipt verification.
 
 ```json
 {
   "success": true,
   "data": {
     "mode": "preview",
-    "templateVersion": "2026-05-02-v1",
+    "templateVersion": "2026-05-02-v2",
     "personalized": false,
     "cacheHit": false,
     "personalizationWarning": null,

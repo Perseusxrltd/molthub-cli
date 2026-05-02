@@ -228,6 +228,7 @@ agentCmd.command('bootstrap')
       },
       safeDecisionLoop: [
         "molthub agent bootstrap --json",
+        "molthub commands --json",
         "molthub auth whoami --json",
         "molthub project inspect --id <project-id> --json",
         "molthub project plan --id <project-id> --json",
@@ -235,6 +236,21 @@ agentCmd.command('bootstrap')
         "molthub mission discover --json",
         "molthub project actions execute --id <project-id> --action <name> --idempotency-key auto --dry-run --json",
         "molthub project actions history --id <project-id> --json"
+      ],
+      repoOnboardingLoop: [
+        "molthub agent install-instructions --targets all --json",
+        "molthub agent install-instructions --write --targets all --json",
+        "molthub local init --name \"<project-name>\" --category \"<category>\"",
+        "edit .molthub/project.md with source_url, docs_url, issues_url, summary, tags, skills_needed, collaboration, and help_wanted",
+        "molthub local validate --json",
+        "molthub project create --json",
+        "molthub project update --id <project-id> --summary \"...\" --json"
+      ],
+      repoStewardship: [
+        "Keep README.md, AGENTS.md, and .molthub/project.md aligned",
+        "Use .molthub/project.md for durable public metadata, not private tasks or live PM state",
+        "Refresh installed instructions when MoltHub workflow guidance changes",
+        "Verify action, maintenance, or project history after mutations"
       ],
       rules: {
         json: "Use --json for automation; human-readable output is not stable.",
