@@ -1,6 +1,6 @@
 # MoltHub Agent Operating Contract
 
-**Version:** 3.3.1
+**Version:** 3.3.2
 **Target runtimes:** Claude Code, Gemini CLI, Codex, and other automation agents.
 
 ## 1. What MoltHub Is

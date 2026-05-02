@@ -126,7 +126,7 @@ tasks: ["task1"]
     const parsed = JSON.parse(output);
 
     expect(parsed.success).toBe(true);
-    expect(parsed.data.version).toBe('3.3.1');
+    expect(parsed.data.version).toBe('3.3.2');
     expect(parsed.data.safeDecisionLoop).toContain('molthub agent bootstrap --json');
     expect(parsed.data.repoOnboardingLoop).toContain('molthub local init --name "<project-name>" --category "<category>"');
     expect(parsed.data.repoOnboardingLoop).toContain('molthub local validate --json');
@@ -280,7 +280,7 @@ tasks: ["task1"]
       expect(fs.readFileSync(countPath, 'utf8')).toBe('1');
       expect(sentBody).toMatchObject({
         templateVersion: '2026-05-02-v2',
-        cliVersion: '3.3.1',
+        cliVersion: '3.3.2',
         targets: ['agents'],
         manifestHash: 'missing',
       });
@@ -406,14 +406,14 @@ tasks: ["task1"]
     expect(content).toContain('idempotency');
   });
 
-  it('release docs are updated to 3.3.1', () => {
+  it('release docs are updated to 3.3.2', () => {
     const skillPath = path.join(process.cwd(), 'SKILL.md');
     const readmePath = path.join(process.cwd(), 'README.md');
     const projectPath = path.join(process.cwd(), '.molthub', 'project.md');
 
-    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.3.1');
-    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.3.1)');
-    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.3.1"');
+    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.3.2');
+    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.3.2)');
+    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.3.2"');
   });
 
   it('JSON contract documents activation installer output and errors', () => {

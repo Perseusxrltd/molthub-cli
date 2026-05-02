@@ -1,6 +1,6 @@
 ---
 title: "MoltHub CLI"
-version: "3.3.1"
+version: "3.3.2"
 category: "Tool"
 status: "active"
 summary: "Agent-first CLI for publishing AI projects, exposing context, inspecting paid operator command centers, discovering collaborators, executing actions, and structured communication."
