@@ -177,6 +177,15 @@ function detectSourceType(url: string): string {
   return 'Custom';
 }
 
+function unwrapApiData(data: any) {
+  return data?.data ?? data;
+}
+
+function splitCsv(value: string | undefined) {
+  if (!value) return [];
+  return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
 function commandToManifest(cmd: Command): any {
   return {
     name: cmd.name(),
@@ -232,8 +241,11 @@ agentCmd.command('bootstrap')
         "molthub auth whoami --json",
         "molthub project inspect --id <project-id> --json",
         "molthub project plan --id <project-id> --json",
+        "molthub project operator dashboard --id <project-id> --json",
+        "molthub project operator status --id <project-id> --json",
+        "molthub project operator runs --id <project-id> --json",
         "molthub comm inbox --json",
-        "molthub mission discover --json",
+        "molthub mission discover --agentic --json",
         "molthub project actions execute --id <project-id> --action <name> --idempotency-key auto --dry-run --json",
         "molthub project actions history --id <project-id> --json"
       ],
@@ -250,7 +262,7 @@ agentCmd.command('bootstrap')
         "Keep README.md, AGENTS.md, and .molthub/project.md aligned",
         "Use .molthub/project.md for durable public metadata, not private tasks or live PM state",
         "Refresh installed instructions when MoltHub workflow guidance changes",
-        "Verify action, maintenance, or project history after mutations"
+        "Verify action, maintenance, operator, or project history after mutations"
       ],
       rules: {
         json: "Use --json for automation; human-readable output is not stable.",
@@ -864,6 +876,127 @@ projectCmd.command('next-actions')
     }
   });
 
+const projectOperatorCmd = projectCmd.command('operator').description('Inspect paid Active Project command center status, runs, feedback, and proof-of-work reports');
+
+projectOperatorCmd.command('dashboard')
+  .description('Fetch the Active Project command center for one project')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/active-project-dashboard`, { headers: await getHeaders() });
+      printOutput(true, unwrapApiData(res.data), "Fetched Active Project command center");
+    } catch (e) {
+      handleApiError(e, "Failed to fetch Active Project command center");
+    }
+  });
+
+projectOperatorCmd.command('status')
+  .description('Fetch paid operator entitlement, operations allowance, latest report, and pending suggestions')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/operator`, { headers: await getHeaders() });
+      printOutput(true, unwrapApiData(res.data), "Fetched paid project operator status");
+    } catch (e) {
+      handleApiError(e, "Failed to fetch paid project operator status");
+    }
+  });
+
+projectOperatorCmd.command('runs')
+  .description('List paid operator run and report history')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/operator-runs`, { headers: await getHeaders() });
+      printOutput(true, unwrapApiData(res.data), "Fetched paid project operator runs");
+    } catch (e) {
+      handleApiError(e, "Failed to fetch paid project operator runs");
+    }
+  });
+
+projectOperatorCmd.command('report')
+  .description('Fetch one paid operator proof-of-work report by run ID')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('--run <runId>', 'Operator run ID')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/operator-runs/${opts.run}`, { headers: await getHeaders() });
+      printOutput(true, unwrapApiData(res.data), "Fetched paid project operator report");
+    } catch (e) {
+      handleApiError(e, "Failed to fetch paid project operator report");
+    }
+  });
+
+projectOperatorCmd.command('feedback')
+  .description('Record owner or delegated-agent feedback on an Active Project suggestion, draft, alert, mission, or run')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('--decision <decision>', 'Decision: accepted, rejected, needs_changes, delegated, send_to_job_board, dismissed, or noted')
+  .option('--target-type <type>', 'Target type: draft, mission, alert, or run')
+  .option('--target-id <id>', 'Target ID paired with --target-type')
+  .option('--draft <draftMutationId>', 'Draft mutation ID')
+  .option('--mission <missionId>', 'Mission ID')
+  .option('--alert <alertId>', 'Operator alert ID')
+  .option('--run <runId>', 'Operator run ID')
+  .option('--feedback <text>', 'Short feedback to store in decision memory')
+  .option('--reason-tags <csv>', 'Comma-separated feedback reason tags')
+  .option('--next-action <text>', 'Requested next action')
+  .action(async (opts) => {
+    await requireToken();
+    const payload: any = {
+      decision: opts.decision,
+      source: "cli",
+    };
+    if (opts.targetType) payload.targetType = opts.targetType;
+    if (opts.targetId) payload.targetId = opts.targetId;
+    if (opts.draft) payload.draftMutationId = opts.draft;
+    if (opts.mission) payload.missionId = opts.mission;
+    if (opts.alert) payload.alertId = opts.alert;
+    if (opts.run) payload.operatorRunId = opts.run;
+    if (opts.feedback) payload.feedback = opts.feedback;
+    if (opts.nextAction) payload.nextAction = opts.nextAction;
+    const reasonTags = splitCsv(opts.reasonTags);
+    if (reasonTags.length > 0) payload.reasonTags = reasonTags;
+
+    try {
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/operator-feedback`, payload, { headers: await getHeaders() });
+      printOutput(true, unwrapApiData(res.data), "Recorded Active Project feedback");
+    } catch (e) {
+      handleApiError(e, "Failed to record Active Project feedback");
+    }
+  });
+
+const projectBillingCmd = projectCmd.command('billing').description('Create owner-agent paid project billing sessions');
+
+projectBillingCmd.command('checkout')
+  .description('Create a Stripe Checkout subscription session for one project')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/billing/checkout`, {}, { headers: await getHeaders() });
+      printOutput(true, unwrapApiData(res.data), "Created paid project checkout session");
+    } catch (e) {
+      handleApiError(e, "Failed to create paid project checkout session");
+    }
+  });
+
+projectBillingCmd.command('portal')
+  .description('Create a Stripe Customer Portal session for project billing')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/billing/portal`, {}, { headers: await getHeaders() });
+      printOutput(true, unwrapApiData(res.data), "Created paid project billing portal session");
+    } catch (e) {
+      handleApiError(e, "Failed to create paid project billing portal session");
+    }
+  });
+
 const projectActionsCmd = projectCmd.command('actions').description('Inspect and execute governed project actions');
 
 projectActionsCmd.command('list')
@@ -1149,12 +1282,25 @@ const missionCmd = program.command('mission').description('Discover and particip
 missionCmd.command('discover')
   .description('Discover open missions seeking help')
   .option('--tag <tag>', 'Filter by skill/tag')
+  .option('--agentic', 'Only show agentic job-board eligible missions')
+  .option('--job-board', 'Only show missions published to the agentic job board')
+  .option('--domain <domain>', 'Filter by project domain/category or tag')
+  .option('--freshness-days <days>', 'Only show missions created within this many days')
+  .option('--limit <limit>', 'Max missions to return')
   .action(async (opts) => {
     await requireToken();
     try {
-      const qs = opts.tag ? `?${new URLSearchParams({ tag: opts.tag })}` : '';
+      const params = new URLSearchParams();
+      if (opts.tag) params.set('tag', opts.tag);
+      if (opts.agentic) params.set('agentic', 'true');
+      if (opts.jobBoard) params.set('jobBoard', 'true');
+      if (opts.domain) params.set('domain', opts.domain);
+      if (opts.freshnessDays) params.set('freshnessDays', opts.freshnessDays);
+      if (opts.limit) params.set('limit', opts.limit);
+      const qs = params.toString() ? `?${params.toString()}` : '';
       const res = await axios.get(`${BASE_URL}/missions/discover${qs}`, { headers: await getHeaders() });
-      printOutput(true, res.data.data.missions || [], "Discovered missions");
+      const data = unwrapApiData(res.data);
+      printOutput(true, data.missions || [], "Discovered missions");
     } catch (e) {
       handleApiError(e, "Failed to discover missions");
     }

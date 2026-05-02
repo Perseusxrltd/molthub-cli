@@ -131,6 +131,8 @@ tasks: ["task1"]
     expect(parsed.data.repoOnboardingLoop).toContain('molthub local init --name "<project-name>" --category "<category>"');
     expect(parsed.data.repoOnboardingLoop).toContain('molthub local validate --json');
     expect(parsed.data.repoStewardship).toContain('Keep README.md, AGENTS.md, and .molthub/project.md aligned');
+    expect(parsed.data.safeDecisionLoop).toContain('molthub project operator dashboard --id <project-id> --json');
+    expect(parsed.data.safeDecisionLoop).toContain('molthub project operator runs --id <project-id> --json');
     expect(parsed.data.commandManifest.some((cmd: any) => cmd.name === 'comm')).toBe(true);
   });
 
@@ -181,8 +183,12 @@ tasks: ["task1"]
     expect(content).toContain('docs_url');
     expect(content).toContain('molthub project create --json');
     expect(content).toContain('molthub project update --id <project-id>');
+    expect(content).toContain('molthub project operator dashboard --id <project-id> --json');
+    expect(content).toContain('molthub project operator feedback --id <project-id>');
+    expect(content).toContain('molthub project billing checkout --id <project-id> --json');
     expect(content).toContain('Keep README.md, AGENTS.md, and `.molthub/project.md` aligned');
     expect(content).toContain('Do not log, print, commit, or transmit API keys');
+    expect(content).toContain('Do not assume a CLI scheduler');
   });
 
   it('agent install-instructions refuses to modify unmarked files without force', () => {
@@ -458,8 +464,11 @@ summary: "A valid summary"
     expect(output).toContain('production');
     expect(output).toContain('maintenance');
     expect(output).toContain('playbook');
+    expect(output).toContain('operator');
+    expect(output).toContain('billing');
     expect(output).not.toContain('delete');
     expect(output).not.toContain('MoltHub registry');
+    expect(output).not.toContain('scheduler');
   });
 
   it('top-level help uses project-facing wording instead of artifact-facing marketing copy', () => {
@@ -485,10 +494,24 @@ summary: "A valid summary"
     const project = parsed.data.manifest.find((cmd: any) => cmd.name === 'project');
     const actions = project.subcommands.find((cmd: any) => cmd.name === 'actions');
     const execute = actions.subcommands.find((cmd: any) => cmd.name === 'execute');
+    const operator = project.subcommands.find((cmd: any) => cmd.name === 'operator');
+    const billing = project.subcommands.find((cmd: any) => cmd.name === 'billing');
     const comm = parsed.data.manifest.find((cmd: any) => cmd.name === 'comm');
+    const mission = parsed.data.manifest.find((cmd: any) => cmd.name === 'mission');
+    const missionDiscover = mission.subcommands.find((cmd: any) => cmd.name === 'discover');
     const reply = comm.subcommands.find((cmd: any) => cmd.name === 'reply');
 
     expect(execute.options.some((opt: any) => opt.flags.includes('--idempotency-key'))).toBe(true);
+    expect(operator.subcommands.some((cmd: any) => cmd.name === 'dashboard')).toBe(true);
+    expect(operator.subcommands.some((cmd: any) => cmd.name === 'status')).toBe(true);
+    expect(operator.subcommands.some((cmd: any) => cmd.name === 'runs')).toBe(true);
+    expect(operator.subcommands.some((cmd: any) => cmd.name === 'report')).toBe(true);
+    expect(operator.subcommands.some((cmd: any) => cmd.name === 'feedback')).toBe(true);
+    expect(operator.subcommands.some((cmd: any) => cmd.name === 'scheduler')).toBe(false);
+    expect(billing.subcommands.some((cmd: any) => cmd.name === 'checkout')).toBe(true);
+    expect(billing.subcommands.some((cmd: any) => cmd.name === 'portal')).toBe(true);
+    expect(missionDiscover.options.some((opt: any) => opt.flags.includes('--agentic'))).toBe(true);
+    expect(missionDiscover.options.some((opt: any) => opt.flags.includes('--job-board'))).toBe(true);
     expect(reply.options.some((opt: any) => opt.flags.includes('--thread'))).toBe(true);
   });
 
@@ -497,7 +520,7 @@ summary: "A valid summary"
     expectNoAuth('comm send --project project-1 --kind status_update --content "Starting work" --json', testDir);
     expectNoAuth('comm reply --thread thread-1 --content "Acknowledged" --json', testDir);
     expectNoAuth('comm ack --message message-1 --json', testDir);
-  });
+  }, 30000);
 
   it('agent, mission, research, room, and handoff commands guard auth before network calls', () => {
     [
@@ -509,7 +532,244 @@ summary: "A valid summary"
       'problem create --title "Problem" --summary "Summary" --json',
       'agent room list --json',
       'agent handoff create --to agent-2 --json',
+      'project operator dashboard --id project-1 --json',
+      'project operator status --id project-1 --json',
+      'project operator runs --id project-1 --json',
+      'project operator report --id project-1 --run run-1 --json',
+      'project operator feedback --id project-1 --decision rejected --target-type draft --target-id draft-1 --feedback "No" --json',
+      'project billing checkout --id project-1 --json',
+      'project billing portal --id project-1 --json',
     ].forEach((cmd) => expectNoAuth(cmd, testDir));
+  }, 30000);
+
+  it('Active Project, billing, and agentic mission commands call the current API endpoints', async () => {
+    const port = 47000 + Math.floor(Math.random() * 2000);
+    const requestLogPath = path.join(testDir, 'active-project-requests.jsonl');
+
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const fs = require('fs');
+      const port = Number(process.argv[1]);
+      const requestLogPath = process.argv[2];
+
+      function reply(res, body, status = 200) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      }
+
+      http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          fs.appendFileSync(requestLogPath, JSON.stringify({
+            method: req.method,
+            url: req.url,
+            auth: req.headers.authorization || null,
+            body: body ? JSON.parse(body) : null
+          }) + '\\n');
+
+          if (req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/active-project-dashboard') {
+            return reply(res, {
+              success: true,
+              data: {
+                entitlement: { status: 'active' },
+                projectHealth: { status: 'on_track' },
+                operationsAllowance: { status: 'healthy' },
+                alerts: [{ id: 'alert-1', title: 'Stale mission' }]
+              }
+            });
+          }
+          if (req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/operator') {
+            return reply(res, {
+              success: true,
+              data: {
+                entitlement: { status: 'active' },
+                latestReport: { id: 'run-1', report: { summary: 'Weekly proof' } },
+                operationsAllowance: { status: 'healthy' },
+                pendingSuggestions: [{ title: 'Draft invitation' }]
+              }
+            });
+          }
+          if (req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/operator-runs') {
+            return reply(res, {
+              success: true,
+              data: {
+                runs: [
+                  { id: 'run-1', status: 'completed', report: { summary: 'Weekly proof' } }
+                ]
+              }
+            });
+          }
+          if (req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/operator-runs/run-1') {
+            return reply(res, {
+              success: true,
+              data: { id: 'run-1', status: 'completed', report: { summary: 'Weekly proof' } }
+            });
+          }
+          if (req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/operator-feedback') {
+            return reply(res, {
+              success: true,
+              data: {
+                decision: { id: 'decision-1', decision: 'needs_changes' },
+                jobBoardMission: null
+              }
+            });
+          }
+          if (req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/billing/checkout') {
+            return reply(res, {
+              success: true,
+              data: {
+                entitlementId: 'ent-1',
+                checkoutSessionId: 'cs_test',
+                url: 'https://checkout.stripe.test/session'
+              }
+            });
+          }
+          if (req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/billing/portal') {
+            return reply(res, {
+              success: true,
+              data: {
+                id: 'bps_test',
+                url: 'https://billing.stripe.test/session'
+              }
+            });
+          }
+          if (req.method === 'GET' && req.url === '/api/v1/missions/discover?tag=planning&agentic=true&jobBoard=true&domain=robotics&freshnessDays=14&limit=5') {
+            return reply(res, {
+              success: true,
+              data: {
+                missions: [
+                  { id: 'mission-1', title: 'Operator mission', agenticJobBoardEligible: true }
+                ]
+              }
+            });
+          }
+
+          reply(res, { success: false, error: { code: 'ERR_NOT_FOUND', message: 'Not found' } }, 404);
+        });
+      }).listen(port, '127.0.0.1', () => console.log('READY'));
+    `, String(port), requestLogPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      const env = emptyAuthEnv(testDir, {
+        MOLTHUB_API_KEY: 'mh_live_test_token',
+        MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+      });
+
+      const dashboard = JSON.parse(execSync(`${CLI_PATH} --json project operator dashboard --id project-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const status = JSON.parse(execSync(`${CLI_PATH} --json project operator status --id project-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const runs = JSON.parse(execSync(`${CLI_PATH} --json project operator runs --id project-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const report = JSON.parse(execSync(`${CLI_PATH} --json project operator report --id project-1 --run run-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const feedback = JSON.parse(execSync(`${CLI_PATH} --json project operator feedback --id project-1 --decision needs_changes --target-type draft --target-id draft-1 --feedback "Too broad" --reason-tags scope,clarity --next-action "Narrow it"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const checkout = JSON.parse(execSync(`${CLI_PATH} --json project billing checkout --id project-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const portal = JSON.parse(execSync(`${CLI_PATH} --json project billing portal --id project-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const missions = JSON.parse(execSync(`${CLI_PATH} --json mission discover --tag planning --agentic --job-board --domain robotics --freshness-days 14 --limit 5`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+
+      const requests = fs.readFileSync(requestLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      const feedbackRequest = requests.find((req) => req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/operator-feedback');
+
+      expect(dashboard.data.projectHealth.status).toBe('on_track');
+      expect(status.data.entitlement.status).toBe('active');
+      expect(runs.data.runs[0].id).toBe('run-1');
+      expect(report.data.id).toBe('run-1');
+      expect(feedback.data.decision.id).toBe('decision-1');
+      expect(checkout.data.checkoutSessionId).toBe('cs_test');
+      expect(portal.data.id).toBe('bps_test');
+      expect(missions.data[0].agenticJobBoardEligible).toBe(true);
+      expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/active-project-dashboard')).toBe(true);
+      expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/operator')).toBe(true);
+      expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/operator-runs')).toBe(true);
+      expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/operator-runs/run-1')).toBe(true);
+      expect(requests.some((req) => req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/billing/checkout')).toBe(true);
+      expect(requests.some((req) => req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/billing/portal')).toBe(true);
+      expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/missions/discover?tag=planning&agentic=true&jobBoard=true&domain=robotics&freshnessDays=14&limit=5')).toBe(true);
+      expect(requests.every((req) => req.auth === 'Bearer mh_live_test_token')).toBe(true);
+      expect(feedbackRequest.body).toMatchObject({
+        decision: 'needs_changes',
+        targetType: 'draft',
+        targetId: 'draft-1',
+        feedback: 'Too broad',
+        reasonTags: ['scope', 'clarity'],
+        nextAction: 'Narrow it',
+        source: 'cli',
+      });
+    } finally {
+      server.kill();
+    }
+  }, 30000);
+
+  it('project operator report returns ERR_NOT_FOUND when the run is absent', async () => {
+    const port = 49000 + Math.floor(Math.random() * 2000);
+
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const port = Number(process.argv[1]);
+      http.createServer((req, res) => {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          success: false,
+          error: { code: 'ERR_NOT_FOUND', message: 'Operator run not found' }
+        }));
+      }).listen(port, '127.0.0.1', () => console.log('READY'));
+    `, String(port)], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      try {
+        execSync(`${CLI_PATH} --json project operator report --id project-1 --run missing-run`, {
+          cwd: testDir,
+          stdio: 'pipe',
+          timeout: EXEC_TIMEOUT,
+          env: emptyAuthEnv(testDir, {
+            MOLTHUB_API_KEY: 'mh_live_test_token',
+            MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+          }),
+        });
+        throw new Error('Should have failed');
+      } catch (e: any) {
+        if (!e.stdout) throw e;
+        const output = `${e.stdout.toString() || ''}`.trim();
+        const parsed = JSON.parse(output);
+
+        expect(parsed.success).toBe(false);
+        expect(parsed.error.code).toBe('ERR_NOT_FOUND');
+      }
+    } finally {
+      server.kill();
+    }
   }, 30000);
 
   it('normalizes object-shaped API errors into string messages', async () => {
