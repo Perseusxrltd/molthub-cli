@@ -126,13 +126,14 @@ tasks: ["task1"]
     const parsed = JSON.parse(output);
 
     expect(parsed.success).toBe(true);
-    expect(parsed.data.version).toBe('3.3.2');
+    expect(parsed.data.version).toBe('3.3.3');
     expect(parsed.data.safeDecisionLoop).toContain('molthub agent bootstrap --json');
     expect(parsed.data.repoOnboardingLoop).toContain('molthub local init --name "<project-name>" --category "<category>"');
     expect(parsed.data.repoOnboardingLoop).toContain('molthub local validate --json');
     expect(parsed.data.repoStewardship).toContain('Keep README.md, AGENTS.md, and .molthub/project.md aligned');
     expect(parsed.data.safeDecisionLoop).toContain('molthub project operator dashboard --id <project-id> --json');
     expect(parsed.data.safeDecisionLoop).toContain('molthub project operator runs --id <project-id> --json');
+    expect(parsed.data.safeDecisionLoop).toContain('molthub jobs discover --json');
     expect(parsed.data.commandManifest.some((cmd: any) => cmd.name === 'comm')).toBe(true);
   });
 
@@ -280,7 +281,7 @@ tasks: ["task1"]
       expect(fs.readFileSync(countPath, 'utf8')).toBe('1');
       expect(sentBody).toMatchObject({
         templateVersion: '2026-05-02-v2',
-        cliVersion: '3.3.2',
+        cliVersion: '3.3.3',
         targets: ['agents'],
         manifestHash: 'missing',
       });
@@ -406,14 +407,14 @@ tasks: ["task1"]
     expect(content).toContain('idempotency');
   });
 
-  it('release docs are updated to 3.3.2', () => {
+  it('release docs are updated to 3.3.3', () => {
     const skillPath = path.join(process.cwd(), 'SKILL.md');
     const readmePath = path.join(process.cwd(), 'README.md');
     const projectPath = path.join(process.cwd(), '.molthub', 'project.md');
 
-    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.3.2');
-    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.3.2)');
-    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.3.2"');
+    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.3.3');
+    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.3.3)');
+    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.3.3"');
   });
 
   it('README exposes a parseable Active Project command reference table', () => {
@@ -508,6 +509,8 @@ summary: "A valid summary"
     const comm = parsed.data.manifest.find((cmd: any) => cmd.name === 'comm');
     const mission = parsed.data.manifest.find((cmd: any) => cmd.name === 'mission');
     const missionDiscover = mission.subcommands.find((cmd: any) => cmd.name === 'discover');
+    const jobs = parsed.data.manifest.find((cmd: any) => cmd.name === 'jobs');
+    const jobsDiscover = jobs.subcommands.find((cmd: any) => cmd.name === 'discover');
     const reply = comm.subcommands.find((cmd: any) => cmd.name === 'reply');
 
     expect(execute.options.some((opt: any) => opt.flags.includes('--idempotency-key'))).toBe(true);
@@ -521,6 +524,9 @@ summary: "A valid summary"
     expect(billing.subcommands.some((cmd: any) => cmd.name === 'portal')).toBe(true);
     expect(missionDiscover.options.some((opt: any) => opt.flags.includes('--agentic'))).toBe(true);
     expect(missionDiscover.options.some((opt: any) => opt.flags.includes('--job-board'))).toBe(true);
+    expect(jobs.subcommands.some((cmd: any) => cmd.name === 'claim')).toBe(true);
+    expect(jobs.subcommands.some((cmd: any) => cmd.name === 'complete')).toBe(true);
+    expect(jobsDiscover.options.some((opt: any) => opt.flags.includes('--freshness-days'))).toBe(true);
     expect(reply.options.some((opt: any) => opt.flags.includes('--thread'))).toBe(true);
   });
 
@@ -536,6 +542,9 @@ summary: "A valid summary"
       'agent permissions --json',
       'mission discover --json',
       'mission claim --id project-1 --mission-id mission-1 --json',
+      'jobs discover --json',
+      'jobs claim --id project-1 --job-id mission-1 --json',
+      'jobs complete --id project-1 --job-id mission-1 --evidence "Done" --json',
       'research import --title "Paper" --json',
       'project research scan --id project-1 --json',
       'problem create --title "Problem" --summary "Summary" --json',
@@ -653,6 +662,18 @@ summary: "A valid summary"
               }
             });
           }
+          if (req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/missions/mission-1/claim') {
+            return reply(res, {
+              success: true,
+              data: { claim: { id: 'claim-1', status: 'pending' } }
+            }, 201);
+          }
+          if (req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/missions/mission-1/complete') {
+            return reply(res, {
+              success: true,
+              data: { claim: { id: 'claim-1', status: 'completed' } }
+            });
+          }
 
           reply(res, { success: false, error: { code: 'ERR_NOT_FOUND', message: 'Not found' } }, 404);
         });
@@ -706,6 +727,21 @@ summary: "A valid summary"
         timeout: EXEC_TIMEOUT,
         env,
       }).toString().trim());
+      const jobs = JSON.parse(execSync(`${CLI_PATH} --json jobs discover --tag planning --domain robotics --freshness-days 14 --limit 5`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const jobClaim = JSON.parse(execSync(`${CLI_PATH} --json jobs claim --id project-1 --job-id mission-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      const jobComplete = JSON.parse(execSync(`${CLI_PATH} --json jobs complete --id project-1 --job-id mission-1 --evidence "Merged PR #12"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
 
       const requests = fs.readFileSync(requestLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
       const feedbackRequest = requests.find((req) => req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/operator-feedback');
@@ -718,6 +754,9 @@ summary: "A valid summary"
       expect(checkout.data.checkoutSessionId).toBe('cs_test');
       expect(portal.data.id).toBe('bps_test');
       expect(missions.data[0].agenticJobBoardEligible).toBe(true);
+      expect(jobs.data[0].agenticJobBoardEligible).toBe(true);
+      expect(jobClaim.data.claim.id).toBe('claim-1');
+      expect(jobComplete.data.claim.status).toBe('completed');
       expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/active-project-dashboard')).toBe(true);
       expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/operator')).toBe(true);
       expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/operator-runs')).toBe(true);
@@ -725,6 +764,8 @@ summary: "A valid summary"
       expect(requests.some((req) => req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/billing/checkout')).toBe(true);
       expect(requests.some((req) => req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/billing/portal')).toBe(true);
       expect(requests.some((req) => req.method === 'GET' && req.url === '/api/v1/missions/discover?tag=planning&agentic=true&jobBoard=true&domain=robotics&freshnessDays=14&limit=5')).toBe(true);
+      expect(requests.some((req) => req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/missions/mission-1/claim')).toBe(true);
+      expect(requests.some((req) => req.method === 'POST' && req.url === '/api/v1/artifacts/project-1/missions/mission-1/complete')).toBe(true);
       expect(requests.every((req) => req.auth === 'Bearer mh_live_test_token')).toBe(true);
       expect(feedbackRequest.body).toMatchObject({
         decision: 'needs_changes',

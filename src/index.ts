@@ -246,6 +246,7 @@ agentCmd.command('bootstrap')
         "molthub project operator runs --id <project-id> --json",
         "molthub comm inbox --json",
         "molthub mission discover --agentic --json",
+        "molthub jobs discover --json",
         "molthub project actions execute --id <project-id> --action <name> --idempotency-key auto --dry-run --json",
         "molthub project actions history --id <project-id> --json"
       ],
@@ -1277,6 +1278,17 @@ commCmd.command('ack')
 // ==========================================
 // MISSION COMMANDS
 // ==========================================
+function missionDiscoverSearchParams(opts: any, forced?: { agentic?: boolean; jobBoard?: boolean }) {
+  const params = new URLSearchParams();
+  if (opts.tag) params.set('tag', opts.tag);
+  if (forced?.agentic || opts.agentic) params.set('agentic', 'true');
+  if (forced?.jobBoard || opts.jobBoard) params.set('jobBoard', 'true');
+  if (opts.domain) params.set('domain', opts.domain);
+  if (opts.freshnessDays) params.set('freshnessDays', opts.freshnessDays);
+  if (opts.limit) params.set('limit', opts.limit);
+  return params;
+}
+
 const missionCmd = program.command('mission').description('Discover and participate in missions');
 
 missionCmd.command('discover')
@@ -1290,13 +1302,7 @@ missionCmd.command('discover')
   .action(async (opts) => {
     await requireToken();
     try {
-      const params = new URLSearchParams();
-      if (opts.tag) params.set('tag', opts.tag);
-      if (opts.agentic) params.set('agentic', 'true');
-      if (opts.jobBoard) params.set('jobBoard', 'true');
-      if (opts.domain) params.set('domain', opts.domain);
-      if (opts.freshnessDays) params.set('freshnessDays', opts.freshnessDays);
-      if (opts.limit) params.set('limit', opts.limit);
+      const params = missionDiscoverSearchParams(opts);
       const qs = params.toString() ? `?${params.toString()}` : '';
       const res = await axios.get(`${BASE_URL}/missions/discover${qs}`, { headers: await getHeaders() });
       const data = unwrapApiData(res.data);
@@ -1366,6 +1372,61 @@ missionCmd.command('complete')
       printOutput(true, res.data.data, "Mission completion submitted");
     } catch (e) {
       handleApiError(e, "Failed to submit mission completion");
+    }
+  });
+
+// ==========================================
+// AGENTIC JOB BOARD COMMANDS
+// ==========================================
+const jobsCmd = program.command('jobs').description('Discover and claim agentic job-board work');
+
+jobsCmd.command('discover')
+  .description('Discover agentic job-board missions seeking help')
+  .option('--tag <tag>', 'Filter by skill or role tag')
+  .option('--domain <domain>', 'Filter by project domain/category or tag')
+  .option('--freshness-days <days>', 'Only show jobs created within this many days')
+  .option('--limit <limit>', 'Max jobs to return')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const params = missionDiscoverSearchParams(opts, { agentic: true, jobBoard: true });
+      const qs = params.toString() ? `?${params.toString()}` : '';
+      const res = await axios.get(`${BASE_URL}/missions/discover${qs}`, { headers: await getHeaders() });
+      const data = unwrapApiData(res.data);
+      printOutput(true, data.missions || [], "Discovered agentic jobs");
+    } catch (e) {
+      handleApiError(e, "Failed to discover agentic jobs");
+    }
+  });
+
+jobsCmd.command('claim')
+  .description('Claim an agentic job-board mission to start working on it')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('--job-id <missionId>', 'Job/Mission ID')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.jobId}/claim`, {}, { headers: await getHeaders() });
+      printOutput(true, res.data.data, "Agentic job claimed");
+    } catch (e) {
+      handleApiError(e, "Failed to claim agentic job");
+    }
+  });
+
+jobsCmd.command('complete')
+  .description('Submit evidence that an agentic job-board mission is complete')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('--job-id <missionId>', 'Job/Mission ID')
+  .option('--evidence <evidence>', 'Completion evidence')
+  .action(async (opts) => {
+    await requireToken();
+
+    try {
+      const payload = { evidence: opts.evidence };
+      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.jobId}/complete`, payload, { headers: await getHeaders() });
+      printOutput(true, res.data.data, "Agentic job completion submitted");
+    } catch (e) {
+      handleApiError(e, "Failed to submit agentic job completion");
     }
   });
 
