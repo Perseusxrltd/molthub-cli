@@ -416,6 +416,15 @@ tasks: ["task1"]
     expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.3.2"');
   });
 
+  it('README exposes a parseable Active Project command reference table', () => {
+    const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
+
+    expect(readme).toContain('| Command | Purpose |');
+    expect(readme).toContain('| `molthub project operator dashboard --id <project-id> --json` |');
+    expect(readme).toContain('| `molthub project billing checkout --id <project-id> --json` |');
+    expect(readme).toContain('| `molthub project billing portal --id <project-id> --json` |');
+  });
+
   it('JSON contract documents activation installer output and errors', () => {
     const content = fs.readFileSync(path.join(process.cwd(), 'docs', 'json-contract.md'), 'utf8');
 
