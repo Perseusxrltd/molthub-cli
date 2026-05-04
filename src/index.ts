@@ -854,6 +854,18 @@ projectCmd.command('readiness')
     }
   });
 
+projectCmd.command('grid-trust')
+  .description('Fetch read-only GRID trust evidence for a GRID project')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .action(async (opts) => {
+    try {
+      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/grid-trust-profile`, { headers: await getHeaders() });
+      printOutput(true, res.data.data ?? res.data, "Fetched GRID trust evidence");
+    } catch (e) {
+      handleApiError(e, "Failed to fetch GRID trust evidence");
+    }
+  });
+
 projectCmd.command('next-actions')
   .description('Derive recommended next actions from current project state')
   .requiredOption('-i, --id <id>', 'Project ID')

@@ -494,6 +494,7 @@ summary: "A valid summary"
     const project = parsed.data.manifest.find((cmd: any) => cmd.name === 'project');
     const actions = project.subcommands.find((cmd: any) => cmd.name === 'actions');
     const execute = actions.subcommands.find((cmd: any) => cmd.name === 'execute');
+    const gridTrust = project.subcommands.find((cmd: any) => cmd.name === 'grid-trust');
     const operator = project.subcommands.find((cmd: any) => cmd.name === 'operator');
     const billing = project.subcommands.find((cmd: any) => cmd.name === 'billing');
     const comm = parsed.data.manifest.find((cmd: any) => cmd.name === 'comm');
@@ -502,6 +503,8 @@ summary: "A valid summary"
     const reply = comm.subcommands.find((cmd: any) => cmd.name === 'reply');
 
     expect(execute.options.some((opt: any) => opt.flags.includes('--idempotency-key'))).toBe(true);
+    expect(gridTrust.description).toContain('GRID trust evidence');
+    expect(gridTrust.options.some((opt: any) => opt.flags.includes('--id'))).toBe(true);
     expect(operator.subcommands.some((cmd: any) => cmd.name === 'dashboard')).toBe(true);
     expect(operator.subcommands.some((cmd: any) => cmd.name === 'status')).toBe(true);
     expect(operator.subcommands.some((cmd: any) => cmd.name === 'runs')).toBe(true);
@@ -520,6 +523,51 @@ summary: "A valid summary"
     expectNoAuth('comm send --project project-1 --kind status_update --content "Starting work" --json', testDir);
     expectNoAuth('comm reply --thread thread-1 --content "Acknowledged" --json', testDir);
     expectNoAuth('comm ack --message message-1 --json', testDir);
+  }, 30000);
+
+  it('project grid-trust fetches read-only GRID evidence without requiring auth', async () => {
+    const port = 39000 + Math.floor(Math.random() * 2000);
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      http.createServer((req, res) => {
+        if (req.method === 'GET' && req.url === '/api/v1/artifacts/project-1/grid-trust-profile') {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            data: {
+              contract: 'GRID Deployment Trust Evidence v0',
+              scope: 'deployment',
+              agentBinding: 'unbound',
+              sourceRepo: 'Perseusxrltd/grid-core',
+              publicMirror: 'Perseusxrltd/grid-terminal'
+            }
+          }));
+          return;
+        }
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'not found' }));
+      }).listen(${port}, '127.0.0.1', () => console.log('READY'));
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      const output = execSync(`${CLI_PATH} --json project grid-trust --id project-1`, {
+        cwd: testDir,
+        stdio: 'pipe',
+        timeout: EXEC_TIMEOUT,
+        env: emptyAuthEnv(testDir, {
+          MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+        }),
+      }).toString().trim();
+      const parsed = JSON.parse(output);
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.data.agentBinding).toBe('unbound');
+      expect(parsed.data.agentId).toBeUndefined();
+      expect(parsed.data.sourceRepo).toBe('Perseusxrltd/grid-core');
+    } finally {
+      server.kill();
+    }
   }, 30000);
 
   it('agent, mission, research, room, and handoff commands guard auth before network calls', () => {
