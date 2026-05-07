@@ -139,6 +139,69 @@ describe('Local Executor Bridge CLI commands', () => {
     }
   }, 30000);
 
+  it('lists missions through the compatibility artifact route', async () => {
+    const port = 51000 + Math.floor(Math.random() * 2000);
+    const requestLogPath = path.join(testDir, 'mission-list-requests.jsonl');
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const fs = require('fs');
+      const port = Number(process.argv[1]);
+      const requestLogPath = process.argv[2];
+      function reply(res, body, status = 200) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      }
+      http.createServer((req, res) => {
+        fs.appendFileSync(requestLogPath, JSON.stringify({
+          method: req.method,
+          url: req.url,
+          auth: req.headers.authorization || null
+        }) + '\\n');
+        if (req.method === 'GET' && req.url === '/api/v1/artifacts/artifact-1') {
+          return reply(res, {
+            success: true,
+            data: {
+              missions: [
+                { id: 'mission-1', title: 'Bridge Mission', status: 'published' }
+              ]
+            }
+          });
+        }
+        reply(res, { error: { code: 'ERR_NOT_FOUND', message: 'Not found' } }, 404);
+      }).listen(port, '127.0.0.1', () => console.log('READY'));
+    `, String(port), requestLogPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      const env = testEnv(testDir, {
+        MOLTHUB_API_KEY: 'bridge-test-token',
+        MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+      });
+
+      const output = execSync(`${CLI_PATH} --json mission list --id artifact-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim();
+      const parsed = JSON.parse(output);
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.data).toEqual([
+        expect.objectContaining({ id: 'mission-1', title: 'Bridge Mission' }),
+      ]);
+      const requests = fs.readFileSync(requestLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      expect(requests).toEqual([
+        expect.objectContaining({
+          method: 'GET',
+          url: '/api/v1/artifacts/artifact-1',
+          auth: 'Bearer bridge-test-token',
+        }),
+      ]);
+    } finally {
+      server.kill();
+    }
+  }, 30000);
+
   it('submits source evidence and completes only when --complete is explicit', async () => {
     const port = 52000 + Math.floor(Math.random() * 2000);
     const requestLogPath = path.join(testDir, 'evidence-requests.jsonl');

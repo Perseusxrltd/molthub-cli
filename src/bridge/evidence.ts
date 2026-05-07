@@ -112,6 +112,46 @@ function isUrl(value: string) {
   return /^https?:\/\//i.test(value);
 }
 
+function cleanUrl(value: string) {
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+function isGitHubPullRequestUrl(value: string) {
+  const parsed = cleanUrl(value);
+  if (!parsed) return false;
+  const url = new URL(parsed);
+  if (url.hostname.toLowerCase() !== 'github.com') return false;
+  const parts = url.pathname.split('/').filter(Boolean);
+  const pullIndex = parts.indexOf('pull');
+  return pullIndex >= 2 && /^\d+$/.test(parts[pullIndex + 1] ?? '');
+}
+
+function isGitLabMergeRequestUrl(value: string) {
+  const parsed = cleanUrl(value);
+  if (!parsed) return false;
+  const url = new URL(parsed);
+  if (url.hostname.toLowerCase() !== 'gitlab.com') return false;
+  const parts = url.pathname.split('/').filter(Boolean);
+  const dashIndex = parts.indexOf('-');
+  const mergeRequestIndex = parts.indexOf('merge_requests');
+  return dashIndex >= 2 && mergeRequestIndex > dashIndex && /^\d+$/.test(parts[mergeRequestIndex + 1] ?? '');
+}
+
+function normalizePullRequestUrl(value: string) {
+  const cleaned = cleanUrl(value);
+  if (!cleaned) return null;
+  return isGitHubPullRequestUrl(cleaned) || isGitLabMergeRequestUrl(cleaned)
+    ? cleaned
+    : null;
+}
+
 function isLikelyCommitSha(value: string) {
   return /^[a-f0-9]{7,64}$/i.test(value);
 }
@@ -150,7 +190,8 @@ export function buildSourceEvidencePayload(fields: BridgeEvidenceFields): Source
     }
   }
 
-  if (fields.prUrl) payload.pullRequestUrl = fields.prUrl;
+  const pullRequestUrl = fields.prUrl ? normalizePullRequestUrl(fields.prUrl) : null;
+  if (pullRequestUrl) payload.pullRequestUrl = pullRequestUrl;
   if (fields.changedPaths.length > 0) payload.changedPaths = fields.changedPaths;
 
   return payload;

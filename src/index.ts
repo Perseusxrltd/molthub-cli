@@ -1397,7 +1397,8 @@ missionCmd.command('list')
     await requireToken();
     try {
       const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}`, { headers: await getHeaders() });
-      printOutput(true, res.data.missions || [], "Fetched missions");
+      const data = unwrapApiData(res.data);
+      printOutput(true, data?.missions || res.data?.missions || [], "Fetched missions");
     } catch (e) {
       handleApiError(e, "Failed to fetch missions");
     }
