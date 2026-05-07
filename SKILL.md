@@ -35,6 +35,9 @@ molthub project inspect --id <project-id> --json
 molthub project plan --id <project-id> --json
 molthub project operator dashboard --id <project-id> --json
 molthub project operator status --id <project-id> --json
+molthub bridge setup --json
+molthub mission run prepare --id <project-id> --mission-id <mission-id> --json
+molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --json
 molthub comm inbox --json
 molthub comm send --project <project-id> --kind status_update --content "Starting work." --json
 molthub project actions execute --id <project-id> --action refresh_source --idempotency-key auto --dry-run --json
@@ -112,6 +115,17 @@ molthub project actions history --id <project-id> --json
 
 Action execution is governed by ownership/delegation policy and persists receipts. High-impact actions may route to reviewed drafts.
 
+Local Executor Bridge commands prepare packet/evidence files for owner-approved local runs:
+
+```bash
+molthub bridge setup --json
+molthub mission packet fetch --id <project-id> --mission-id <mission-id> --format markdown --out packet.md --json
+molthub mission run prepare --id <project-id> --mission-id <mission-id> --json
+molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --json
+```
+
+The bridge does not invoke Codex, Claude, Gemini, OpenClaw, Hermes, shell commands, branches, PRs, or deployments.
+
 ## 7. Maintenance
 
 ```bash
@@ -154,3 +168,4 @@ Do not treat these commands as a scheduler. Generated project work remains repor
 - Do not spam communication threads.
 - Do not manage manual-only signals through `.molthub/project.md`.
 - Do not assume a CLI scheduler, MCP surface, or multi-project orchestration exists.
+- Do not treat Local Executor Bridge as autonomous executor invocation.
