@@ -96,7 +96,18 @@ molthub jobs claim --id <project-id> --job-id <mission-id> --json
 molthub jobs complete --id <project-id> --job-id <mission-id> --evidence "Completed via PR #12" --json
 ```
 
-## 6. Execute A Governed Action
+## 6. Prepare A Local Bridge Run
+
+Use Local Executor Bridge v0 when the owner has approved a mission packet and wants the local machine to prepare a run folder. The bridge fetches packet files and submits proof; it does not invoke Codex, Claude, Gemini, shell commands, branches, PRs, or deployments.
+
+```bash
+molthub bridge setup --json
+molthub mission packet fetch --id <project-id> --mission-id <mission-id> --format markdown --out packet.md --json
+molthub mission run prepare --id <project-id> --mission-id <mission-id> --json
+molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --json
+```
+
+## 7. Execute A Governed Action
 
 Always dry-run first:
 
@@ -125,7 +136,7 @@ Verify receipt history:
 molthub project actions history --id <project-id> --limit 5 --json
 ```
 
-## 7. Inspect Active Project Operator Work
+## 8. Inspect Active Project Operator Work
 
 For paid MoltHub Active Project artifacts, inspect the command center, operator status, run history, and specific proof-of-work reports:
 
@@ -151,7 +162,7 @@ molthub project billing portal --id <project-id> --json
 
 These commands do not start a scheduler or grant autonomous publish authority.
 
-## 8. Run Bounded Maintenance
+## 9. Run Bounded Maintenance
 
 ```bash
 molthub project playbook get --id <project-id> --json

@@ -19,6 +19,17 @@ import {
   sanitizePersonalizedFiles,
   type ActivationFile,
 } from './activation-pack.js';
+import {
+  completeMissionFromEvidence,
+  fetchMissionPacket,
+  submitSourceEvidence,
+} from './bridge/api.js';
+import {
+  buildCompletionEvidence,
+  buildSourceEvidencePayload,
+  parseEvidenceTemplate,
+} from './bridge/evidence.js';
+import { defaultRunDirectory, writeBridgeRunPackage } from './bridge/files.js';
 
 dotenv.config({ quiet: true });
 
@@ -186,6 +197,28 @@ function splitCsv(value: string | undefined) {
   return value.split(',').map((entry) => entry.trim()).filter(Boolean);
 }
 
+function unwrapPacketMarkdown(data: any): string {
+  if (typeof data === 'string') return data;
+  if (typeof data?.markdown === 'string') return data.markdown;
+  if (typeof data?.data?.markdown === 'string') return data.data.markdown;
+  if (typeof data?.packet?.markdown === 'string') return data.packet.markdown;
+  return JSON.stringify(data, null, 2);
+}
+
+async function writeTextOutput(filePath: string, content: string) {
+  const resolved = path.resolve(process.cwd(), filePath);
+  await fs.ensureDir(path.dirname(resolved));
+  await fs.writeFile(resolved, content, 'utf8');
+  return resolved;
+}
+
+async function writeJsonOutput(filePath: string, content: unknown) {
+  const resolved = path.resolve(process.cwd(), filePath);
+  await fs.ensureDir(path.dirname(resolved));
+  await fs.writeJson(resolved, content, { spaces: 2 });
+  return resolved;
+}
+
 function commandToManifest(cmd: Command): any {
   return {
     name: cmd.name(),
@@ -247,6 +280,9 @@ agentCmd.command('bootstrap')
         "molthub comm inbox --json",
         "molthub mission discover --agentic --json",
         "molthub jobs discover --json",
+        "molthub bridge setup --json",
+        "molthub mission run prepare --id <project-id> --mission-id <mission-id> --json",
+        "molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --json",
         "molthub project actions execute --id <project-id> --action <name> --idempotency-key auto --dry-run --json",
         "molthub project actions history --id <project-id> --json"
       ],
@@ -1276,6 +1312,48 @@ commCmd.command('ack')
   });
 
 // ==========================================
+// LOCAL EXECUTOR BRIDGE COMMANDS
+// ==========================================
+const bridgeCmd = program.command('bridge').description('Prepare local mission runs without executing tools');
+
+bridgeCmd.command('setup')
+  .description('Check local bridge prerequisites and required Workbench grants')
+  .action(async () => {
+    const config = await loadConfig();
+    const hasEnvToken = Boolean(process.env.MOLTHUB_API_KEY);
+    const hasConfigToken = Boolean(config.token);
+    const molthubDir = path.join(process.cwd(), '.molthub');
+
+    printOutput(true, {
+      auth: {
+        configured: hasEnvToken || hasConfigToken,
+        source: hasEnvToken ? 'env' : hasConfigToken ? 'config' : 'none',
+        envVar: 'MOLTHUB_API_KEY',
+      },
+      local: {
+        cwd: process.cwd(),
+        molthubDirectory: molthubDir,
+        molthubDirectoryExists: await fs.pathExists(molthubDir),
+      },
+      requiredCapabilities: [
+        'read_mission_packet',
+        'submit_mission_source_evidence',
+        'complete_mission (optional, only for --complete)',
+      ],
+      commands: [
+        'molthub mission run prepare --id <project-id> --mission-id <mission-id>',
+        'molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md',
+        'molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --complete',
+      ],
+      warnings: [
+        'Local bridge v0 does not run Codex, Claude, Gemini, shell commands, branches, PRs, or deployments.',
+        'Use an owner-created agent API key with project-scoped delegation grants.',
+        'Do not place secrets in packet, evidence, or run files.',
+      ],
+    }, 'Checked Local Executor Bridge setup');
+  });
+
+// ==========================================
 // MISSION COMMANDS
 // ==========================================
 function missionDiscoverSearchParams(opts: any, forced?: { agentic?: boolean; jobBoard?: boolean }) {
@@ -1322,6 +1400,164 @@ missionCmd.command('list')
       printOutput(true, res.data.missions || [], "Fetched missions");
     } catch (e) {
       handleApiError(e, "Failed to fetch missions");
+    }
+  });
+
+const missionPacketCmd = missionCmd.command('packet').description('Fetch mission packets for local bridge use');
+
+missionPacketCmd.command('fetch')
+  .description('Fetch a mission packet as JSON or Markdown')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('-m, --mission-id <missionId>', 'Mission ID')
+  .option('--format <format>', 'Packet format: json or markdown', 'json')
+  .requiredOption('--out <path>', 'Local output file path')
+  .action(async (opts) => {
+    await requireToken();
+    if (opts.format !== 'json' && opts.format !== 'markdown') {
+      printOutput(false, null, 'Packet format must be json or markdown.', { code: 'ERR_BAD_FORMAT' });
+      process.exit(1);
+    }
+
+    try {
+      const headers = await getHeaders();
+      const data = await fetchMissionPacket({
+        http: axios,
+        baseUrl: BASE_URL,
+        artifactId: opts.id,
+        missionId: opts.missionId,
+        format: opts.format,
+        headers,
+      });
+      const outputPath = opts.format === 'markdown'
+        ? await writeTextOutput(opts.out, unwrapPacketMarkdown(data))
+        : await writeJsonOutput(opts.out, data);
+
+      printOutput(true, {
+        artifactId: opts.id,
+        missionId: opts.missionId,
+        format: opts.format,
+        outputPath,
+      }, 'Fetched mission packet');
+    } catch (e) {
+      handleApiError(e, 'Failed to fetch mission packet');
+    }
+  });
+
+const missionRunCmd = missionCmd.command('run').description('Prepare local mission runs without executing tools');
+
+missionRunCmd.command('prepare')
+  .description('Fetch the packet and create local run files')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('-m, --mission-id <missionId>', 'Mission ID')
+  .option('--out <path>', 'Run folder path. Defaults to .molthub/runs/<mission-id>')
+  .action(async (opts) => {
+    await requireToken();
+    const outputDir = opts.out
+      ? path.resolve(process.cwd(), opts.out)
+      : path.resolve(process.cwd(), defaultRunDirectory(opts.missionId));
+
+    try {
+      const headers = await getHeaders();
+      const packetJson = await fetchMissionPacket({
+        http: axios,
+        baseUrl: BASE_URL,
+        artifactId: opts.id,
+        missionId: opts.missionId,
+        format: 'json',
+        headers,
+      });
+      const packetMarkdownResponse = await fetchMissionPacket({
+        http: axios,
+        baseUrl: BASE_URL,
+        artifactId: opts.id,
+        missionId: opts.missionId,
+        format: 'markdown',
+        headers,
+      });
+      const files = await writeBridgeRunPackage({
+        artifactId: opts.id,
+        missionId: opts.missionId,
+        outputDir,
+        packetJson,
+        packetMarkdown: unwrapPacketMarkdown(packetMarkdownResponse),
+      });
+
+      printOutput(true, {
+        artifactId: opts.id,
+        missionId: opts.missionId,
+        outputDir: files.outputDir,
+        files: {
+          packetMarkdown: files.packetMarkdownPath,
+          packetJson: files.packetJsonPath,
+          evidenceTemplate: files.evidenceTemplatePath,
+          runMetadata: files.runMetadataPath,
+        },
+        nextCommands: [
+          `molthub mission evidence submit --id ${opts.id} --mission-id ${opts.missionId} --file ${path.relative(process.cwd(), files.evidenceTemplatePath)}`,
+          `molthub mission evidence submit --id ${opts.id} --mission-id ${opts.missionId} --file ${path.relative(process.cwd(), files.evidenceTemplatePath)} --complete`,
+        ],
+        warnings: [
+          'Local bridge v0 does not run Codex, Claude, Gemini, shell commands, branches, PRs, or deployments.',
+          'Run external tools manually outside MoltHub, then fill evidence.md.',
+          'Do not place secrets in packet, evidence, or run files.',
+        ],
+      }, 'Prepared local mission run files');
+    } catch (e) {
+      handleApiError(e, 'Failed to prepare local mission run');
+    }
+  });
+
+const missionEvidenceCmd = missionCmd.command('evidence').description('Submit local bridge evidence');
+
+missionEvidenceCmd.command('submit')
+  .description('Parse local evidence and submit Source Evidence')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('-m, --mission-id <missionId>', 'Mission ID')
+  .requiredOption('--file <path>', 'Evidence Markdown file')
+  .option('--complete', 'Also submit mission completion after source evidence is saved')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const evidencePath = path.resolve(process.cwd(), opts.file);
+      const markdown = await fs.readFile(evidencePath, 'utf8');
+      const fields = parseEvidenceTemplate(markdown);
+      const sourceEvidence = buildSourceEvidencePayload(fields);
+      const completionEvidence = buildCompletionEvidence(fields);
+      const headers = await getHeaders();
+      const sourceEvidenceResult = await submitSourceEvidence({
+        http: axios,
+        baseUrl: BASE_URL,
+        artifactId: opts.id,
+        missionId: opts.missionId,
+        headers,
+        payload: sourceEvidence,
+      });
+      let completionResult = null;
+      if (opts.complete) {
+        completionResult = await completeMissionFromEvidence({
+          http: axios,
+          baseUrl: BASE_URL,
+          artifactId: opts.id,
+          missionId: opts.missionId,
+          headers,
+          evidence: completionEvidence,
+          sourceEvidence,
+        });
+      }
+
+      printOutput(true, {
+        artifactId: opts.id,
+        missionId: opts.missionId,
+        sourceEvidence: sourceEvidenceResult,
+        completed: Boolean(opts.complete),
+        completion: completionResult,
+      }, opts.complete ? 'Submitted source evidence and mission completion' : 'Submitted source evidence');
+    } catch (e: any) {
+      if (e?.message?.includes('Result summary')) {
+        printOutput(false, null, e.message, { code: 'ERR_INVALID_EVIDENCE' });
+        process.exit(1);
+      }
+      handleApiError(e, 'Failed to submit mission evidence');
     }
   });
 
