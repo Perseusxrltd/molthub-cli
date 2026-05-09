@@ -407,14 +407,14 @@ tasks: ["task1"]
     expect(content).toContain('idempotency');
   });
 
-  it('release docs are updated to 3.3.3', () => {
+  it('release docs are updated to 3.4.0', () => {
     const skillPath = path.join(process.cwd(), 'SKILL.md');
     const readmePath = path.join(process.cwd(), 'README.md');
     const projectPath = path.join(process.cwd(), '.molthub', 'project.md');
 
-    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.3.3');
-    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.3.3)');
-    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.3.3"');
+    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.4.0');
+    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.4.0)');
+    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.4.0"');
   });
 
   it('README exposes a parseable Active Project command reference table', () => {
