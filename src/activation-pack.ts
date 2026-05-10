@@ -252,6 +252,33 @@ function mergeMarkedBlock(existing: string, nextBlock: string, force: boolean) {
   };
 }
 
+async function resolveSafeActivationPath(repoRoot: string, relativePath: string) {
+  const root = path.resolve(repoRoot);
+  const absolutePath = path.resolve(root, relativePath);
+  const rootWithSeparator = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+
+  if (absolutePath !== root && !absolutePath.startsWith(rootWithSeparator)) {
+    throw new Error(`Activation path escapes repository root: ${relativePath}`);
+  }
+
+  const relativeParts = path.relative(root, absolutePath).split(path.sep).filter(Boolean);
+  let cursor = root;
+  for (const part of relativeParts) {
+    cursor = path.join(cursor, part);
+    try {
+      const stat = await fs.lstat(cursor);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Activation path uses a symlink: ${path.relative(root, cursor)}`);
+      }
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') break;
+      throw error;
+    }
+  }
+
+  return absolutePath;
+}
+
 export async function planActivationFileWrites(
   repoRoot: string,
   files: ActivationFile[],
@@ -260,7 +287,7 @@ export async function planActivationFileWrites(
   const planned: PlannedActivationFile[] = [];
 
   for (const file of files) {
-    const absolutePath = path.join(repoRoot, file.path);
+    const absolutePath = await resolveSafeActivationPath(repoRoot, file.path);
     const exists = await fs.pathExists(absolutePath);
     if (!exists) {
       planned.push({
@@ -292,7 +319,7 @@ export async function planActivationFileWrites(
   if (options.write) {
     for (const file of planned) {
       if (file.action === 'blocked_existing_file') continue;
-      const absolutePath = path.join(repoRoot, file.path);
+      const absolutePath = await resolveSafeActivationPath(repoRoot, file.path);
       await fs.ensureDir(path.dirname(absolutePath));
       await fs.writeFile(absolutePath, file.content, 'utf8');
     }

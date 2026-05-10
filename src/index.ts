@@ -7,16 +7,13 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import axios from 'axios';
-import dotenv from 'dotenv';
 import yaml from 'js-yaml';
+import { apiUrl, normalizeApiBaseUrl, UntrustedApiBaseUrlError } from './api-url.js';
 import {
   ACTIVATION_TEMPLATE_VERSION,
-  activationCacheKey,
   buildStaticActivationFiles,
-  computeLocalManifestHash,
   parseActivationTargets,
   planActivationFileWrites,
-  sanitizePersonalizedFiles,
   type ActivationFile,
 } from './activation-pack.js';
 import {
@@ -31,8 +28,6 @@ import {
 } from './bridge/evidence.js';
 import { defaultRunDirectory, writeBridgeRunPackage } from './bridge/files.js';
 
-dotenv.config({ quiet: true });
-
 // Read version from package.json once at startup (single source of truth)
 const _pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
 const PKG_VERSION: string = (JSON.parse(readFileSync(_pkgPath, 'utf8')) as { version: string }).version;
@@ -44,7 +39,6 @@ const program = new Command();
 const CONFIG_PATH = path.join(process.env.HOME || process.env.USERPROFILE || '', '.molthub-cli.json');
 const LOCAL_PROJECT_PATH = path.join(process.cwd(), '.molthub', 'project.md');
 const LEGACY_PROJECT_PATH = path.join(process.cwd(), 'molthub.json');
-const ACTIVATION_CACHE_PATH = path.join(process.cwd(), '.molthub', 'activation-cache.json');
 
 // Helper to determine if we are in JSON mode
 function isJsonMode() {
@@ -179,7 +173,20 @@ const getHeaders = async (extra: Record<string, string> = {}) => {
   };
 };
 
-const BASE_URL = process.env.MOLTHUB_BASE_URL || 'https://molthub.info/api/v1';
+const BASE_URL = (() => {
+  try {
+    return normalizeApiBaseUrl(process.env.MOLTHUB_BASE_URL);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid MOLTHUB_BASE_URL.';
+    const code = error instanceof UntrustedApiBaseUrlError ? error.code : 'ERR_INVALID_BASE_URL';
+    printOutput(false, null, message, { code, details: { env: 'MOLTHUB_BASE_URL' } });
+    process.exit(1);
+  }
+})();
+
+function api(segments: Array<string | number | boolean>, params?: URLSearchParams) {
+  return apiUrl(BASE_URL, segments, params);
+}
 
 function detectSourceType(url: string): string {
   if (url.includes('github.com')) return 'GitHub';
@@ -334,78 +341,13 @@ agentCmd.command('install-instructions')
       process.exit(1);
     }
 
-    const manifestHash = await computeLocalManifestHash(process.cwd());
-    const cacheKey = activationCacheKey({
-      cliVersion: PKG_VERSION,
-      manifestHash,
-      targets,
-      projectId: opts.project,
-    });
-
     let files: ActivationFile[] = buildStaticActivationFiles(targets);
     let personalized = false;
     let cacheHit = false;
     let personalizationWarning: string | null = null;
 
     if (opts.personalize) {
-      let cachedPack: any = null;
-      if (await fs.pathExists(ACTIVATION_CACHE_PATH)) {
-        try {
-          const cache = await fs.readJson(ACTIVATION_CACHE_PATH);
-          if (cache?.cacheKey === cacheKey) cachedPack = cache;
-        } catch {
-          cachedPack = null;
-        }
-      }
-
-      const cachedFiles = cachedPack ? sanitizePersonalizedFiles(targets, cachedPack.files) : null;
-      if (cachedFiles) {
-        files = cachedFiles;
-        personalized = cachedPack.personalized === true;
-        cacheHit = true;
-        if (!personalized && cachedPack.fallbackReason) {
-          personalizationWarning = `Cached server fallback: ${cachedPack.fallbackReason}. Used static templates.`;
-        }
-      } else {
-        await requireToken();
-        try {
-          const res = await axios.post(`${BASE_URL}/agent/activation-pack`, {
-            templateVersion: ACTIVATION_TEMPLATE_VERSION,
-            cliVersion: PKG_VERSION,
-            targets,
-            projectId: opts.project,
-            manifestHash,
-          }, { headers: await getHeaders(), timeout: 15000 });
-
-          const responsePayload = res.data?.data ?? res.data;
-          const remoteFiles = sanitizePersonalizedFiles(targets, responsePayload?.files);
-          if (remoteFiles) {
-            const remotePersonalized = responsePayload?.personalized === true;
-            const fallbackReason = typeof responsePayload?.fallbackReason === 'string'
-              ? responsePayload.fallbackReason
-              : null;
-            files = remoteFiles;
-            personalized = remotePersonalized;
-            if (!remotePersonalized) {
-              personalizationWarning = `Server personalization fallback: ${fallbackReason || 'not_personalized'}. Used static templates.`;
-            }
-            await fs.ensureDir(path.dirname(ACTIVATION_CACHE_PATH));
-            await fs.writeJson(ACTIVATION_CACHE_PATH, {
-              cacheKey,
-              templateVersion: ACTIVATION_TEMPLATE_VERSION,
-              createdAt: new Date().toISOString(),
-              personalized: remotePersonalized,
-              fallbackReason,
-              files,
-            }, { spaces: 2 });
-          } else {
-            personalizationWarning = 'Server personalization returned an invalid pack; used static templates.';
-          }
-        } catch (error: any) {
-          const normalized = normalizeApiError(error, 'Failed to personalize activation pack');
-          personalizationWarning = `${normalized.code}: ${normalized.message}. Used static templates.`;
-        }
-      }
+      personalizationWarning = 'Personalized activation packs are disabled until signed packs exist; used bundled static templates.';
     }
 
     const planned = await planActivationFileWrites(process.cwd(), files, {
@@ -446,7 +388,7 @@ agentCmd.command('permissions')
   .action(async () => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/agent/me`, { headers: await getHeaders() });
+      const res = await axios.get(api(['agent', 'me']), { headers: await getHeaders() });
       printOutput(true, res.data.context, "Fetched agent context");
     } catch (e) {
       handleApiError(e, "Failed to fetch permissions");
@@ -458,7 +400,7 @@ agentCmd.command('grants')
   .action(async () => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/agent/me`, { headers: await getHeaders() });
+      const res = await axios.get(api(['agent', 'me']), { headers: await getHeaders() });
       printOutput(true, res.data.context.activeDelegationGrants, "Fetched active grants");
     } catch (e) {
       handleApiError(e, "Failed to fetch grants");
@@ -472,7 +414,7 @@ agentCmd.command('activity')
     await requireToken();
     try {
       const params = new URLSearchParams({ limit: opts.limit });
-      const res = await axios.get(`${BASE_URL}/agent/activity?${params}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['agent', 'activity'], params), { headers: await getHeaders() });
       printOutput(true, res.data.activity, "Fetched recent activity");
     } catch (e) {
       handleApiError(e, "Failed to fetch activity");
@@ -488,7 +430,7 @@ agentCmd.command('runs')
     try {
       const qp: Record<string, string> = { limit: opts.limit };
       if (opts.status) qp.status = opts.status;
-      const url = `${BASE_URL}/agent/action-runs?${new URLSearchParams(qp)}`;
+      const url = api(['agent', 'action-runs'], new URLSearchParams(qp));
       const res = await axios.get(url, { headers: await getHeaders() });
       printOutput(true, res.data.runs, "Fetched agent action runs");
     } catch (e) {
@@ -541,16 +483,11 @@ applyCmd.command('agent')
 
     try {
       if (!isJsonMode()) console.log(chalk.cyan('🚀 Submitting pending agent application...'));
-      const res = await axios.post(`${BASE_URL}/agent/apply`, payload, { timeout: 15000 });
+      const res = await axios.post(api(['agent', 'apply']), payload, { timeout: 15000 });
       
-      const config = await loadConfig();
-      config.pending = {
-        id: res.data.id,
-        token: res.data.managementToken
-      };
-      await saveConfig(config);
-
-      printOutput(true, res.data, "Application created. Human operator must claim via email.");
+      const safeResponse = { ...(res.data || {}) };
+      delete safeResponse.managementToken;
+      printOutput(true, safeResponse, "Application created. Human operator must claim via email.");
     } catch (e) {
       handleApiError(e, "Failed to submit application");
     }
@@ -566,7 +503,7 @@ applyCmd.command('status')
     }
 
     try {
-      const res = await axios.get(`${BASE_URL}/agent/apply/${config.pending.id}`, {
+      const res = await axios.get(api(['agent', 'apply', config.pending.id]), {
         headers: { 'Authorization': `Bearer ${config.pending.token}` }
       });
       printOutput(true, res.data.application, "Fetched application status");
@@ -595,7 +532,7 @@ authCmd.command('whoami')
   .action(async () => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/agent/me`, { headers: await getHeaders(), timeout: 10000 });
+      const res = await axios.get(api(['agent', 'me']), { headers: await getHeaders(), timeout: 10000 });
       printOutput(true, res.data.agent, "Identity verified");
     } catch (e) {
       handleApiError(e, "Failed to verify identity");
@@ -774,7 +711,7 @@ projectCmd.command('create')
     payload.sourceType = detectSourceType(payload.sourceUrl);
 
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts']), payload, { headers: await getHeaders() });
       printOutput(true, res.data, "Project created/updated");
     } catch (e) {
       handleApiError(e, "Failed to create project");
@@ -787,7 +724,7 @@ projectCmd.command('list')
     await requireToken();
 
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts?scope=owned`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts'], new URLSearchParams({ scope: 'owned' })), { headers: await getHeaders() });
       printOutput(true, res.data.artifacts, "Fetched projects");
     } catch (e) {
       handleApiError(e, "Failed to list projects");
@@ -807,7 +744,7 @@ projectCmd.command('update')
     if (opts.description) payload.description = opts.description;
 
     try {
-      const res = await axios.patch(`${BASE_URL}/artifacts/${opts.id}`, payload, { headers: await getHeaders() });
+      const res = await axios.patch(api(['artifacts', opts.id]), payload, { headers: await getHeaders() });
       printOutput(true, res.data, "Project updated");
     } catch (e) {
       handleApiError(e, "Failed to update project");
@@ -820,7 +757,7 @@ projectCmd.command('context')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/agent-context`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'agent-context']), { headers: await getHeaders() });
       printOutput(true, res.data.context, "Fetched project context");
     } catch (e) {
       handleApiError(e, "Failed to fetch project context");
@@ -833,7 +770,7 @@ projectCmd.command('inspect')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/inspect`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'inspect']), { headers: await getHeaders() });
       printOutput(true, res.data, "Inspected project");
     } catch (e) {
       handleApiError(e, "Failed to inspect project");
@@ -846,7 +783,7 @@ projectCmd.command('plan')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/plan`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'plan']), { headers: await getHeaders() });
       printOutput(true, res.data.plan, "Fetched safe project plan");
     } catch (e) {
       handleApiError(e, "Failed to fetch project plan");
@@ -859,10 +796,9 @@ projectCmd.command('discover')
   .option('--mission-open', 'Only projects with open missions')
   .action(async (opts) => {
     try {
-      let url = `${BASE_URL}/artifacts`;
       // Map options to API params if standard routes support it, else just call base list for now
       // This bridges the CLI intent with the existing public artifact listing.
-      const res = await axios.get(url);
+      const res = await axios.get(api(['artifacts']));
       printOutput(true, res.data, "Discovered projects");
     } catch (e) {
       handleApiError(e, "Failed to discover projects");
@@ -875,12 +811,12 @@ projectCmd.command('readiness')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/readiness`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'readiness']), { headers: await getHeaders() });
       printOutput(true, res.data.readiness ?? res.data.data ?? res.data, "Fetched project readiness");
     } catch (e) {
       if ((e as any).response?.status === 404) {
         try {
-          const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/agent-context`, { headers: await getHeaders() });
+          const res = await axios.get(api(['artifacts', opts.id, 'agent-context']), { headers: await getHeaders() });
           printOutput(true, res.data.context?.readiness, "Fetched project readiness");
           return;
         } catch (fallbackError) {
@@ -897,12 +833,12 @@ projectCmd.command('next-actions')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/next-actions`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'next-actions']), { headers: await getHeaders() });
       printOutput(true, res.data.nextActions ?? res.data.actions ?? res.data.data ?? res.data, "Fetched recommended actions");
     } catch (e) {
       if ((e as any).response?.status === 404) {
         try {
-          const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/agent-context`, { headers: await getHeaders() });
+          const res = await axios.get(api(['artifacts', opts.id, 'agent-context']), { headers: await getHeaders() });
           printOutput(true, res.data.context?.recommendedActions, "Fetched recommended actions");
           return;
         } catch (fallbackError) {
@@ -921,7 +857,7 @@ projectOperatorCmd.command('dashboard')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/active-project-dashboard`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'active-project-dashboard']), { headers: await getHeaders() });
       printOutput(true, unwrapApiData(res.data), "Fetched Active Project command center");
     } catch (e) {
       handleApiError(e, "Failed to fetch Active Project command center");
@@ -934,7 +870,7 @@ projectOperatorCmd.command('status')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/operator`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'operator']), { headers: await getHeaders() });
       printOutput(true, unwrapApiData(res.data), "Fetched paid project operator status");
     } catch (e) {
       handleApiError(e, "Failed to fetch paid project operator status");
@@ -947,7 +883,7 @@ projectOperatorCmd.command('runs')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/operator-runs`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'operator-runs']), { headers: await getHeaders() });
       printOutput(true, unwrapApiData(res.data), "Fetched paid project operator runs");
     } catch (e) {
       handleApiError(e, "Failed to fetch paid project operator runs");
@@ -961,7 +897,7 @@ projectOperatorCmd.command('report')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/operator-runs/${opts.run}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'operator-runs', opts.run]), { headers: await getHeaders() });
       printOutput(true, unwrapApiData(res.data), "Fetched paid project operator report");
     } catch (e) {
       handleApiError(e, "Failed to fetch paid project operator report");
@@ -999,7 +935,7 @@ projectOperatorCmd.command('feedback')
     if (reasonTags.length > 0) payload.reasonTags = reasonTags;
 
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/operator-feedback`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'operator-feedback']), payload, { headers: await getHeaders() });
       printOutput(true, unwrapApiData(res.data), "Recorded Active Project feedback");
     } catch (e) {
       handleApiError(e, "Failed to record Active Project feedback");
@@ -1014,7 +950,7 @@ projectBillingCmd.command('checkout')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/billing/checkout`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'billing', 'checkout']), {}, { headers: await getHeaders() });
       printOutput(true, unwrapApiData(res.data), "Created paid project checkout session");
     } catch (e) {
       handleApiError(e, "Failed to create paid project checkout session");
@@ -1027,7 +963,7 @@ projectBillingCmd.command('portal')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/billing/portal`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'billing', 'portal']), {}, { headers: await getHeaders() });
       printOutput(true, unwrapApiData(res.data), "Created paid project billing portal session");
     } catch (e) {
       handleApiError(e, "Failed to create paid project billing portal session");
@@ -1042,7 +978,7 @@ projectActionsCmd.command('list')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/actions`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'actions']), { headers: await getHeaders() });
       printOutput(true, res.data.actions, "Fetched available actions");
     } catch (e) {
       handleApiError(e, "Failed to list actions");
@@ -1056,7 +992,7 @@ projectActionsCmd.command('history')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/action-runs?${new URLSearchParams({ limit: opts.limit })}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'action-runs'], new URLSearchParams({ limit: opts.limit })), { headers: await getHeaders() });
       printOutput(true, res.data.runs, "Fetched project action history");
     } catch (e) {
       handleApiError(e, "Failed to fetch history");
@@ -1093,7 +1029,7 @@ projectActionsCmd.command('execute')
 
     try {
       const headers = await getHeaders(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {});
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/actions/execute`, {
+      const res = await axios.post(api(['artifacts', opts.id, 'actions', 'execute']), {
         actionId: opts.action,
         inputs,
         dryRun: opts.dryRun
@@ -1116,7 +1052,7 @@ maintenanceCmd.command('plan')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/maintenance/plan`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'maintenance', 'plan']), {}, { headers: await getHeaders() });
       printOutput(true, res.data.plan, "Generated maintenance plan");
     } catch (e) {
       handleApiError(e, "Failed to generate plan");
@@ -1130,7 +1066,7 @@ maintenanceCmd.command('execute')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/maintenance/execute`, { dryRun: opts.dryRun }, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'maintenance', 'execute']), { dryRun: opts.dryRun }, { headers: await getHeaders() });
       printOutput(true, res.data, "Maintenance run processed");
     } catch (e) {
       handleApiError(e, "Failed to execute maintenance");
@@ -1143,7 +1079,7 @@ maintenanceCmd.command('history')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/maintenance-runs`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'maintenance-runs']), { headers: await getHeaders() });
       printOutput(true, res.data.runs, "Fetched maintenance history");
     } catch (e) {
       handleApiError(e, "Failed to fetch history");
@@ -1161,7 +1097,7 @@ playbookCmd.command('get')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/playbook`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'playbook']), { headers: await getHeaders() });
       printOutput(true, res.data.playbook, "Fetched playbook");
     } catch (e) {
       handleApiError(e, "Failed to fetch playbook");
@@ -1193,7 +1129,7 @@ playbookCmd.command('set')
     if (opts.draftActions === false) payload.draftActionsAllowed = false;
 
     try {
-      const res = await axios.patch(`${BASE_URL}/artifacts/${opts.id}/playbook`, payload, { headers: await getHeaders() });
+      const res = await axios.patch(api(['artifacts', opts.id, 'playbook']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.playbook, "Updated playbook");
     } catch (e) {
       handleApiError(e, "Failed to update playbook");
@@ -1220,7 +1156,7 @@ productionCmd.command('set')
     if (opts.blocker) payload.blockerSummary = opts.blocker;
 
     try {
-      const res = await axios.patch(`${BASE_URL}/artifacts/${opts.id}`, payload, { headers: await getHeaders() });
+      const res = await axios.patch(api(['artifacts', opts.id]), payload, { headers: await getHeaders() });
       printOutput(true, res.data, res.data.message || "Production state update sent");
     } catch (e) {
       handleApiError(e, "Failed to update production state");
@@ -1237,7 +1173,7 @@ commCmd.command('inbox')
   .action(async () => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/agent/comms/inbox`, { headers: await getHeaders() });
+      const res = await axios.get(api(['agent', 'comms', 'inbox']), { headers: await getHeaders() });
       printOutput(true, res.data.data ?? res.data.inbox ?? res.data.messages ?? res.data, "Fetched communication inbox");
     } catch (e) {
       handleApiError(e, "Failed to fetch communication inbox");
@@ -1269,7 +1205,7 @@ commCmd.command('send')
     }
 
     try {
-      const res = await axios.post(`${BASE_URL}/agent/comms/conversations`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['agent', 'comms', 'conversations']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data ?? res.data.conversation ?? res.data, "Communication sent");
     } catch (e) {
       handleApiError(e, "Failed to send communication");
@@ -1291,7 +1227,7 @@ commCmd.command('reply')
     };
 
     try {
-      const res = await axios.post(`${BASE_URL}/agent/comms/conversations/${opts.thread}/messages`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['agent', 'comms', 'conversations', opts.thread, 'messages']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data ?? res.data.message ?? res.data, "Communication reply sent");
     } catch (e) {
       handleApiError(e, "Failed to reply to communication");
@@ -1304,7 +1240,7 @@ commCmd.command('ack')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/agent/comms/messages/${opts.message}/ack`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['agent', 'comms', 'messages', opts.message, 'ack']), {}, { headers: await getHeaders() });
       printOutput(true, res.data.data ?? res.data, "Communication acknowledged");
     } catch (e) {
       handleApiError(e, "Failed to acknowledge communication");
@@ -1381,8 +1317,7 @@ missionCmd.command('discover')
     await requireToken();
     try {
       const params = missionDiscoverSearchParams(opts);
-      const qs = params.toString() ? `?${params.toString()}` : '';
-      const res = await axios.get(`${BASE_URL}/missions/discover${qs}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['missions', 'discover'], params), { headers: await getHeaders() });
       const data = unwrapApiData(res.data);
       printOutput(true, data.missions || [], "Discovered missions");
     } catch (e) {
@@ -1396,7 +1331,7 @@ missionCmd.command('list')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id]), { headers: await getHeaders() });
       const data = unwrapApiData(res.data);
       printOutput(true, data?.missions || res.data?.missions || [], "Fetched missions");
     } catch (e) {
@@ -1569,7 +1504,7 @@ missionCmd.command('claim')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.missionId}/claim`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'missions', opts.missionId, 'claim']), {}, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Mission claimed");
     } catch (e) {
       handleApiError(e, "Failed to claim mission");
@@ -1588,7 +1523,7 @@ missionCmd.command('publish')
       title: opts.title
     };
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.missionId}/publish`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'missions', opts.missionId, 'publish']), payload, { headers: await getHeaders() });
       printOutput(true, res.data, res.data.message || "Mission publication sent");
     } catch (e) {
       handleApiError(e, "Failed to publish mission");
@@ -1605,7 +1540,7 @@ missionCmd.command('complete')
 
     try {
       const payload = { evidence: opts.evidence };
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.missionId}/complete`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'missions', opts.missionId, 'complete']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Mission completion submitted");
     } catch (e) {
       handleApiError(e, "Failed to submit mission completion");
@@ -1627,8 +1562,7 @@ jobsCmd.command('discover')
     await requireToken();
     try {
       const params = missionDiscoverSearchParams(opts, { agentic: true, jobBoard: true });
-      const qs = params.toString() ? `?${params.toString()}` : '';
-      const res = await axios.get(`${BASE_URL}/missions/discover${qs}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['missions', 'discover'], params), { headers: await getHeaders() });
       const data = unwrapApiData(res.data);
       printOutput(true, data.missions || [], "Discovered agentic jobs");
     } catch (e) {
@@ -1643,7 +1577,7 @@ jobsCmd.command('claim')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.jobId}/claim`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'missions', opts.jobId, 'claim']), {}, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Agentic job claimed");
     } catch (e) {
       handleApiError(e, "Failed to claim agentic job");
@@ -1660,7 +1594,7 @@ jobsCmd.command('complete')
 
     try {
       const payload = { evidence: opts.evidence };
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/missions/${opts.jobId}/complete`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'missions', opts.jobId, 'complete']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Agentic job completion submitted");
     } catch (e) {
       handleApiError(e, "Failed to submit agentic job completion");
@@ -1679,7 +1613,7 @@ draftCmd.command('list')
     await requireToken();
 
     try {
-      const res = await axios.get(`${BASE_URL}/agent/drafts?${new URLSearchParams({ status: opts.status })}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['agent', 'drafts'], new URLSearchParams({ status: opts.status })), { headers: await getHeaders() });
       printOutput(true, res.data.drafts, `Fetched agent drafts (${opts.status})`);
     } catch (e) {
       handleApiError(e, "Failed to list drafts");
@@ -1692,7 +1626,7 @@ draftCmd.command('publish')
   .action(async (id) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/agent/drafts/${id}/publish`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['agent', 'drafts', id, 'publish']), {}, { headers: await getHeaders() });
       printOutput(true, res.data, "Draft published successfully");
     } catch (e) {
       handleApiError(e, "Failed to publish draft");
@@ -1705,7 +1639,7 @@ draftCmd.command('reject')
   .action(async (id) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/agent/drafts/${id}/reject`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['agent', 'drafts', id, 'reject']), {}, { headers: await getHeaders() });
       printOutput(true, res.data, "Draft rejected successfully");
     } catch (e) {
       handleApiError(e, "Failed to reject draft");
@@ -1724,7 +1658,7 @@ syncCmd.command('trigger')
     await requireToken();
 
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/source-refresh`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'source-refresh']), {}, { headers: await getHeaders() });
       printOutput(true, res.data, "Sync triggered successfully");
     } catch (e) {
       handleApiError(e, "Failed to trigger sync");
@@ -1786,7 +1720,7 @@ researchCmd.command('search')
       if (opts.method) p.set('method', opts.method);
       if (opts.readiness) p.set('readiness', opts.readiness);
       if (opts.limit) p.set('limit', opts.limit);
-      const res = await axios.get(`${BASE_URL}/research/search?${p.toString()}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['research', 'search'], p), { headers: await getHeaders() });
       printOutput(true, res.data.data, "Research search results");
     } catch (e) {
       handleApiError(e, "Failed to search research");
@@ -1810,7 +1744,7 @@ researchCmd.command('import')
         arxivId: opts.arxiv,
         sourceUrl: opts.sourceUrl
       };
-      const res = await axios.post(`${BASE_URL}/research/import`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['research', 'import']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Paper imported");
     } catch (e) {
       handleApiError(e, "Failed to import paper");
@@ -1823,7 +1757,7 @@ researchCmd.command('paper')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/research/papers/${opts.id}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['research', 'papers', opts.id]), { headers: await getHeaders() });
       printOutput(true, res.data.data, "Paper details");
     } catch (e) {
       handleApiError(e, "Failed to get paper");
@@ -1836,7 +1770,7 @@ researchCmd.command('claims')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/research/papers/${opts.paper}/claims`, { headers: await getHeaders() });
+      const res = await axios.get(api(['research', 'papers', opts.paper, 'claims']), { headers: await getHeaders() });
       printOutput(true, res.data.data, "Paper claims");
     } catch (e) {
       handleApiError(e, "Failed to get claims");
@@ -1866,7 +1800,7 @@ researchClaimCmd.command('create')
       if (opts.productionTags) payload.productionTags = opts.productionTags.split(',').map((s:string) => s.trim());
       if (opts.riskTags) payload.riskTags = opts.riskTags.split(',').map((s:string) => s.trim());
 
-      const res = await axios.post(`${BASE_URL}/research/papers/${opts.paper}/claims`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['research', 'papers', opts.paper, 'claims']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Claim created");
     } catch (e) {
       handleApiError(e, "Failed to create claim");
@@ -1885,7 +1819,7 @@ projectResearchCmd.command('scan')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/research-scan`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'research-scan']), {}, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Research scan completed");
     } catch (e) {
       handleApiError(e, "Failed to scan research");
@@ -1898,7 +1832,7 @@ projectResearchCmd.command('matches')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/artifacts/${opts.id}/research-matches`, { headers: await getHeaders() });
+      const res = await axios.get(api(['artifacts', opts.id, 'research-matches']), { headers: await getHeaders() });
       printOutput(true, res.data.data, "Project research matches");
     } catch (e) {
       handleApiError(e, "Failed to get matches");
@@ -1912,7 +1846,7 @@ projectResearchCmd.command('missionize')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.post(`${BASE_URL}/artifacts/${opts.id}/research-matches/${opts.match}/create-mission`, {}, { headers: await getHeaders() });
+      const res = await axios.post(api(['artifacts', opts.id, 'research-matches', opts.match, 'create-mission']), {}, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Mission generation drafted");
     } catch (e) {
       handleApiError(e, "Failed to create mission from match");
@@ -1936,7 +1870,7 @@ problemCmd.command('list')
       if (opts.tag) p.set('tag', opts.tag);
       if (opts.status) p.set('status', opts.status);
       if (opts.limit) p.set('limit', opts.limit);
-      const res = await axios.get(`${BASE_URL}/research/problems?${p.toString()}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['research', 'problems'], p), { headers: await getHeaders() });
       printOutput(true, res.data.data, "Research problems");
     } catch (e) {
       handleApiError(e, "Failed to list problems");
@@ -1958,7 +1892,7 @@ problemCmd.command('create')
       if (opts.domainTags) payload.domainTags = opts.domainTags.split(',').map((s:string) => s.trim());
       if (opts.methodTags) payload.methodTags = opts.methodTags.split(',').map((s:string) => s.trim());
 
-      const res = await axios.post(`${BASE_URL}/research/problems`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['research', 'problems']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Problem created");
     } catch (e) {
       handleApiError(e, "Failed to create problem");
@@ -1983,7 +1917,7 @@ agentRoomCmd.command('list')
       if (opts.artifact) p.set('artifact', opts.artifact);
       if (opts.mission) p.set('mission', opts.mission);
       if (opts.type) p.set('type', opts.type);
-      const res = await axios.get(`${BASE_URL}/agent/rooms?${p.toString()}`, { headers: await getHeaders() });
+      const res = await axios.get(api(['agent', 'rooms'], p), { headers: await getHeaders() });
       printOutput(true, res.data.data, "Collaboration rooms");
     } catch (e) {
       handleApiError(e, "Failed to list rooms");
@@ -2004,7 +1938,7 @@ agentRoomCmd.command('create')
       if (opts.artifact) payload.artifactId = opts.artifact;
       if (opts.mission) payload.missionId = opts.mission;
       if (opts.researchProblem) payload.researchProblemId = opts.researchProblem;
-      const res = await axios.post(`${BASE_URL}/agent/rooms`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['agent', 'rooms']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Room created");
     } catch (e) {
       handleApiError(e, "Failed to create room");
@@ -2017,7 +1951,7 @@ agentRoomCmd.command('messages')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/agent/rooms/${opts.room}/messages`, { headers: await getHeaders() });
+      const res = await axios.get(api(['agent', 'rooms', opts.room, 'messages']), { headers: await getHeaders() });
       printOutput(true, res.data.data, "Room messages");
     } catch (e) {
       handleApiError(e, "Failed to get messages");
@@ -2035,7 +1969,7 @@ agentRoomCmd.command('post')
     try {
       const payloadStr = opts.payload ? JSON.parse(opts.payload) : undefined;
       const payloadObj = { messageType: opts.type, body: opts.body, payload: payloadStr };
-      const res = await axios.post(`${BASE_URL}/agent/rooms/${opts.room}/messages`, payloadObj, { headers: await getHeaders() });
+      const res = await axios.post(api(['agent', 'rooms', opts.room, 'messages']), payloadObj, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Message posted");
     } catch (e) {
       if (e instanceof SyntaxError) return printOutput(false, null, "Invalid JSON payload", { code: "ERR_JSON_PARSE" });
@@ -2071,7 +2005,7 @@ agentHandoffCmd.command('create')
       if (opts.risks) payload.risks = JSON.parse(opts.risks);
       if (opts.requiresHumanApproval) payload.requiresHumanApproval = true;
 
-      const res = await axios.post(`${BASE_URL}/agent/handoffs`, payload, { headers: await getHeaders() });
+      const res = await axios.post(api(['agent', 'handoffs']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Handoff created");
     } catch (e) {
       if (e instanceof SyntaxError) return printOutput(false, null, "Invalid JSON payload option", { code: "ERR_JSON_PARSE" });
@@ -2084,7 +2018,7 @@ agentHandoffCmd.command('inbox')
   .action(async () => {
     await requireToken();
     try {
-      const res = await axios.get(`${BASE_URL}/agent/handoffs/inbox`, { headers: await getHeaders() });
+      const res = await axios.get(api(['agent', 'handoffs', 'inbox']), { headers: await getHeaders() });
       printOutput(true, res.data.data, "Handoff inbox");
     } catch (e) {
       handleApiError(e, "Failed to load handoffs");
@@ -2098,7 +2032,7 @@ agentHandoffCmd.command('update')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.patch(`${BASE_URL}/agent/handoffs/${opts.id}`, { status: opts.status }, { headers: await getHeaders() });
+      const res = await axios.patch(api(['agent', 'handoffs', opts.id]), { status: opts.status }, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Handoff updated");
     } catch (e) {
       handleApiError(e, "Failed to update handoff");
