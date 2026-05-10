@@ -77,7 +77,7 @@ Memory update notes:
   });
 
   it('omits non-URL PR notes from the source evidence URL field', () => {
-    for (const prText of ['No PR was opened.', 'N/A', 'none', 'No PR; committed directly to master.']) {
+    for (const prText of ['No PR was opened.', 'No PR created', 'no pull request', 'N/A', 'none', 'No PR; committed directly to master.']) {
       const fields = parseEvidenceTemplate(`# MoltHub Mission Evidence
 
 Mission: Local Bridge MVP

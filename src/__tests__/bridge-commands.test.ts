@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs-extra';
+import net from 'net';
 import path from 'path';
 
 const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
@@ -32,6 +33,22 @@ function waitForServerReady(server: ChildProcessWithoutNullStreams) {
         clearTimeout(timer);
         reject(new Error(text));
       }
+    });
+  });
+}
+
+function getFreeLoopbackPort() {
+  return new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('failed to allocate loopback port')));
+        return;
+      }
+      const port = address.port;
+      server.close(() => resolve(port));
     });
   });
 }
@@ -72,7 +89,7 @@ describe('Local Executor Bridge CLI commands', () => {
   });
 
   it('fetches a packet and prepares a local run folder without executing tools', async () => {
-    const port = 50000 + Math.floor(Math.random() * 2000);
+    const port = await getFreeLoopbackPort();
     const requestLogPath = path.join(testDir, 'requests.jsonl');
     const outDir = path.join(testDir, '.molthub', 'runs', 'mission-1');
     const server = spawn(process.execPath, ['-e', `
@@ -139,8 +156,8 @@ describe('Local Executor Bridge CLI commands', () => {
     }
   }, 30000);
 
-  it('lists missions through the compatibility artifact route', async () => {
-    const port = 51000 + Math.floor(Math.random() * 2000);
+  it('lists missions through the dedicated mission-list route', async () => {
+    const port = await getFreeLoopbackPort();
     const requestLogPath = path.join(testDir, 'mission-list-requests.jsonl');
     const server = spawn(process.execPath, ['-e', `
       const http = require('http');
@@ -157,6 +174,72 @@ describe('Local Executor Bridge CLI commands', () => {
           url: req.url,
           auth: req.headers.authorization || null
         }) + '\\n');
+        if (req.method === 'GET' && req.url === '/api/v1/artifacts/artifact-1/missions') {
+          return reply(res, {
+            success: true,
+            data: {
+              missions: [
+                { id: 'mission-1', title: 'Bridge Mission', status: 'published' }
+              ]
+            }
+          });
+        }
+        reply(res, { error: { code: 'ERR_NOT_FOUND', message: 'Not found' } }, 404);
+      }).listen(port, '127.0.0.1', () => console.log('READY'));
+    `, String(port), requestLogPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      const env = testEnv(testDir, {
+        MOLTHUB_API_KEY: 'bridge-test-token',
+        MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+      });
+
+      const output = execSync(`${CLI_PATH} --json mission list --id artifact-1`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim();
+      const parsed = JSON.parse(output);
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.data).toEqual([
+        expect.objectContaining({ id: 'mission-1', title: 'Bridge Mission' }),
+      ]);
+      const requests = fs.readFileSync(requestLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      expect(requests).toEqual([
+        expect.objectContaining({
+          method: 'GET',
+          url: '/api/v1/artifacts/artifact-1/missions',
+          auth: 'Bearer bridge-test-token',
+        }),
+      ]);
+    } finally {
+      server.kill();
+    }
+  }, 30000);
+
+  it('falls back to the compatibility artifact route if mission-list deployment returns 405', async () => {
+    const port = await getFreeLoopbackPort();
+    const requestLogPath = path.join(testDir, 'mission-list-fallback-requests.jsonl');
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const fs = require('fs');
+      const port = Number(process.argv[1]);
+      const requestLogPath = process.argv[2];
+      function reply(res, body, status = 200) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      }
+      http.createServer((req, res) => {
+        fs.appendFileSync(requestLogPath, JSON.stringify({
+          method: req.method,
+          url: req.url,
+          auth: req.headers.authorization || null
+        }) + '\\n');
+        if (req.method === 'GET' && req.url === '/api/v1/artifacts/artifact-1/missions') {
+          return reply(res, { error: { code: 'HTTP_405', message: 'Method not allowed' } }, 405);
+        }
         if (req.method === 'GET' && req.url === '/api/v1/artifacts/artifact-1') {
           return reply(res, {
             success: true,
@@ -193,6 +276,11 @@ describe('Local Executor Bridge CLI commands', () => {
       expect(requests).toEqual([
         expect.objectContaining({
           method: 'GET',
+          url: '/api/v1/artifacts/artifact-1/missions',
+          auth: 'Bearer bridge-test-token',
+        }),
+        expect.objectContaining({
+          method: 'GET',
           url: '/api/v1/artifacts/artifact-1',
           auth: 'Bearer bridge-test-token',
         }),
@@ -203,7 +291,7 @@ describe('Local Executor Bridge CLI commands', () => {
   }, 30000);
 
   it('submits source evidence and completes only when --complete is explicit', async () => {
-    const port = 52000 + Math.floor(Math.random() * 2000);
+    const port = await getFreeLoopbackPort();
     const requestLogPath = path.join(testDir, 'evidence-requests.jsonl');
     const evidencePath = path.join(testDir, 'evidence.md');
     fs.writeFileSync(evidencePath, `# MoltHub Mission Evidence

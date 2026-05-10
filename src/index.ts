@@ -199,6 +199,13 @@ function unwrapApiData(data: any) {
   return data?.data ?? data;
 }
 
+function shouldFallbackMissionListRoute(error: unknown) {
+  const status = typeof error === 'object' && error !== null && 'response' in error
+    ? (error as { response?: { status?: number } }).response?.status
+    : undefined;
+  return status === 404 || status === 405;
+}
+
 function splitCsv(value: string | undefined) {
   if (!value) return [];
   return value.split(',').map((entry) => entry.trim()).filter(Boolean);
@@ -1331,7 +1338,14 @@ missionCmd.command('list')
   .action(async (opts) => {
     await requireToken();
     try {
-      const res = await axios.get(api(['artifacts', opts.id]), { headers: await getHeaders() });
+      const headers = await getHeaders();
+      let res;
+      try {
+        res = await axios.get(api(['artifacts', opts.id, 'missions']), { headers });
+      } catch (error) {
+        if (!shouldFallbackMissionListRoute(error)) throw error;
+        res = await axios.get(api(['artifacts', opts.id]), { headers });
+      }
       const data = unwrapApiData(res.data);
       printOutput(true, data?.missions || res.data?.missions || [], "Fetched missions");
     } catch (e) {
