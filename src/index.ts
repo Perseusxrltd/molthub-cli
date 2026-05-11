@@ -36,6 +36,11 @@ import {
   updateRunStatus,
 } from './bridge/local-run.js';
 import type { BridgeExecutorId, BridgeRunStatus } from './bridge/types.js';
+import {
+  checkPipelineConformance,
+  exportProductionPack,
+  validateProductionPack,
+} from './local-production.js';
 
 // Read version from package.json once at startup (single source of truth)
 const _pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
@@ -706,6 +711,55 @@ localCmd.command('validate')
       printOutput(false, null, "Validation failed", { code: "ERR_PARSE_ERROR", details: e.message });
       process.exit(1);
     }
+  });
+
+const localProductionCmd = localCmd.command('production').description('Validate and export repo-local .molthub production packs');
+
+localProductionCmd.command('validate')
+  .description('Validate the local .molthub production pack without changing files')
+  .action(async () => {
+    const result = await validateProductionPack(process.cwd());
+    printOutput(result.ok, result, result.ok ? 'Production pack is valid' : 'Production pack validation failed', {
+      code: 'ERR_PRODUCTION_PACK_INVALID',
+      details: result.errors,
+    });
+    if (!result.ok) process.exit(1);
+  });
+
+localProductionCmd.command('export')
+  .description('Write a reviewed production-pack export report after owner review')
+  .option('--reviewed', 'Confirm owner review happened before export')
+  .option('--out <path>', 'Export report path. Defaults to .molthub/production/export-report.json')
+  .action(async (opts) => {
+    try {
+      const result = await exportProductionPack(process.cwd(), Boolean(opts.reviewed), opts.out);
+      if (!result.validation.ok) {
+        printOutput(false, result, 'Production pack export blocked by validation errors', {
+          code: 'ERR_PRODUCTION_PACK_INVALID',
+          details: result.validation.errors,
+        });
+        process.exit(1);
+      }
+      printOutput(true, result, 'Exported reviewed production pack report');
+    } catch (error: any) {
+      printOutput(false, null, error?.message || 'Production pack export failed', {
+        code: 'ERR_PRODUCTION_PACK_EXPORT',
+      });
+      process.exit(1);
+    }
+  });
+
+const pipelineCmd = program.command('pipeline').description('Check MoltHub production-pipeline docs and boundary conformance');
+
+pipelineCmd.command('check')
+  .description('Scan docs and repo metadata for stale versions or unsafe orchestration claims')
+  .action(async () => {
+    const result = await checkPipelineConformance(process.cwd());
+    printOutput(result.ok, result, result.ok ? 'Pipeline conformance check passed' : 'Pipeline conformance check failed', {
+      code: 'ERR_PIPELINE_CONFORMANCE',
+      details: result.errors,
+    });
+    if (!result.ok) process.exit(1);
   });
 
 // ==========================================

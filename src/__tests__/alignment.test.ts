@@ -56,6 +56,23 @@ function waitForServerReady(server: ChildProcessWithoutNullStreams) {
   });
 }
 
+function writeProductionPackFixture(root: string) {
+  const files = [
+    '.molthub/production/current-state.yml',
+    '.molthub/production/warnings.yml',
+    '.molthub/systems/implemented-systems.yml',
+    '.molthub/missions/mission-index.yml',
+    '.molthub/reviews/review-index.yml',
+    '.molthub/agents/agent-context.yml',
+  ];
+  fs.ensureDirSync(path.join(root, '.molthub'));
+  fs.writeFileSync(path.join(root, '.molthub', 'project.md'), '---\ntitle: Test\ncategory: Tool\n---\n');
+  for (const rel of files) {
+    fs.ensureDirSync(path.dirname(path.join(root, rel)));
+    fs.writeFileSync(path.join(root, rel), 'version: 1\n');
+  }
+}
+
 describe('MoltHub CLI Beta Alignment', () => {
   let testDir: string;
 
@@ -497,6 +514,62 @@ summary: "A valid summary"
     expect(parsed.data.title).toBe('Test');
   });
 
+  it('local production validate passes valid pack and rejects forbidden metadata names', () => {
+    writeProductionPackFixture(testDir);
+    const output = execSync(`${CLI_PATH} --json local production validate`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString().trim();
+    const parsed = JSON.parse(output);
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.ok).toBe(true);
+
+    fs.writeFileSync(path.join(testDir, 'molthub.yaml'), 'forbidden: true\n');
+    fs.ensureDirSync(path.join(testDir, '.mothub'));
+    let failed: any = null;
+    try {
+      execSync(`${CLI_PATH} --json local production validate`, { cwd: testDir, timeout: EXEC_TIMEOUT });
+    } catch (error: any) {
+      failed = JSON.parse(error.stdout.toString().trim());
+    }
+    expect(failed?.success).toBe(false);
+    expect(failed.error.details.map((entry: any) => entry.code)).toEqual(
+      expect.arrayContaining(['ERR_FORBIDDEN_MOLTHUB_YAML', 'ERR_FORBIDDEN_MOTHUB_DIR']),
+    );
+  });
+
+  it('local production export requires explicit reviewed confirmation', () => {
+    writeProductionPackFixture(testDir);
+    let blocked: any = null;
+    try {
+      execSync(`${CLI_PATH} --json local production export`, { cwd: testDir, timeout: EXEC_TIMEOUT });
+    } catch (error: any) {
+      blocked = JSON.parse(error.stdout.toString().trim());
+    }
+    expect(blocked?.success).toBe(false);
+    expect(blocked.error.code).toBe('ERR_PRODUCTION_PACK_EXPORT');
+
+    const output = execSync(`${CLI_PATH} --json local production export --reviewed`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString().trim();
+    const parsed = JSON.parse(output);
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.written).toContain('export-report.json');
+    expect(fs.existsSync(path.join(testDir, '.molthub', 'production', 'export-report.json'))).toBe(true);
+  });
+
+  it('pipeline check catches forbidden public claims without network access', () => {
+    fs.writeFileSync(path.join(testDir, 'README.md'), 'MoltHub public beta ready with automatic dispatch.\n');
+
+    let failed: any = null;
+    try {
+      execSync(`${CLI_PATH} --json pipeline check`, { cwd: testDir, timeout: EXEC_TIMEOUT });
+    } catch (error: any) {
+      failed = JSON.parse(error.stdout.toString().trim());
+    }
+
+    expect(failed?.success).toBe(false);
+    expect(failed.error.code).toBe('ERR_PIPELINE_CONFORMANCE');
+    expect(failed.error.details.map((entry: any) => entry.code)).toEqual(
+      expect.arrayContaining(['ERR_PUBLIC_BETA_OVERCLAIM', 'ERR_AUTOMATIC_DISPATCH_CLAIM']),
+    );
+  });
+
   it('project help lists implemented project commands', () => {
     const output = execSync(`${CLI_PATH} project --help`, { cwd: testDir, timeout: EXEC_TIMEOUT }).toString();
 
@@ -539,8 +612,14 @@ summary: "A valid summary"
     const billing = project.subcommands.find((cmd: any) => cmd.name === 'billing');
     const comm = parsed.data.manifest.find((cmd: any) => cmd.name === 'comm');
     const mission = parsed.data.manifest.find((cmd: any) => cmd.name === 'mission');
+    const local = parsed.data.manifest.find((cmd: any) => cmd.name === 'local');
+    const pipeline = parsed.data.manifest.find((cmd: any) => cmd.name === 'pipeline');
     const missionDiscover = mission.subcommands.find((cmd: any) => cmd.name === 'discover');
     const missionList = mission.subcommands.find((cmd: any) => cmd.name === 'list');
+    const missionRun = mission.subcommands.find((cmd: any) => cmd.name === 'run');
+    const missionEvidence = mission.subcommands.find((cmd: any) => cmd.name === 'evidence');
+    const missionCompletion = mission.subcommands.find((cmd: any) => cmd.name === 'completion');
+    const localProduction = local.subcommands.find((cmd: any) => cmd.name === 'production');
     const jobs = parsed.data.manifest.find((cmd: any) => cmd.name === 'jobs');
     const jobsDiscover = jobs.subcommands.find((cmd: any) => cmd.name === 'discover');
     const reply = comm.subcommands.find((cmd: any) => cmd.name === 'reply');
@@ -557,6 +636,12 @@ summary: "A valid summary"
     expect(missionDiscover.options.some((opt: any) => opt.flags.includes('--agentic'))).toBe(true);
     expect(missionDiscover.options.some((opt: any) => opt.flags.includes('--job-board'))).toBe(true);
     expect(missionList.options.some((opt: any) => opt.flags.includes('--id'))).toBe(true);
+    expect(missionRun.subcommands.some((cmd: any) => cmd.name === 'status')).toBe(true);
+    expect(missionEvidence.subcommands.some((cmd: any) => cmd.name === 'collect')).toBe(true);
+    expect(missionCompletion.subcommands.some((cmd: any) => cmd.name === 'request')).toBe(true);
+    expect(localProduction.subcommands.some((cmd: any) => cmd.name === 'validate')).toBe(true);
+    expect(localProduction.subcommands.some((cmd: any) => cmd.name === 'export')).toBe(true);
+    expect(pipeline.subcommands.some((cmd: any) => cmd.name === 'check')).toBe(true);
     expect(jobs.subcommands.some((cmd: any) => cmd.name === 'claim')).toBe(true);
     expect(jobs.subcommands.some((cmd: any) => cmd.name === 'complete')).toBe(true);
     expect(jobsDiscover.options.some((opt: any) => opt.flags.includes('--freshness-days'))).toBe(true);
