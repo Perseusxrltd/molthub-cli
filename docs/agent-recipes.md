@@ -22,7 +22,7 @@ molthub agent install-instructions --targets all --json
 molthub agent install-instructions --write --targets all --json
 ```
 
-Static preview/write makes zero MoltHub or DeepSeek calls. `--personalize` is reserved for future signed activation packs; in 3.4.1 it still uses bundled static templates, does not call MoltHub or DeepSeek, and does not trust unsigned remote fallback files:
+Static preview/write makes zero MoltHub or DeepSeek calls. `--personalize` is reserved for future signed activation packs; in 3.5.0 it still uses bundled static templates, does not call MoltHub or DeepSeek, and does not trust unsigned remote fallback files:
 
 ```bash
 molthub agent install-instructions --personalize --targets agents,claude --json

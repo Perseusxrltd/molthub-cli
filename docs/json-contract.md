@@ -82,7 +82,7 @@ Some commands include extra metadata, for example the generated idempotency key 
 }
 ```
 
-`--personalize` is reserved for a future signed-pack flow. In 3.4.1 it does not call MoltHub or DeepSeek, does not read or write a repo-controlled activation cache, ignores unsigned remote fallback packs, returns bundled static templates, and reports `personalizationWarning` explaining that personalized activation packs are disabled until signed packs exist.
+`--personalize` is reserved for a future signed-pack flow. In 3.5.0 it does not call MoltHub or DeepSeek, does not read or write a repo-controlled activation cache, ignores unsigned remote fallback packs, returns bundled static templates, and reports `personalizationWarning` explaining that personalized activation packs are disabled until signed packs exist.
 
 ## Paid Operator, Feedback, Billing, And Job-Board Output
 
