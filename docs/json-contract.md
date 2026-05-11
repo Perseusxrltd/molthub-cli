@@ -106,7 +106,7 @@ Some commands include extra metadata, for example the generated idempotency key 
 
 `molthub bridge setup --json` is local-only. It reports whether an API key is configured, whether a local `.molthub` directory exists, and which Workbench delegation grants are required. It never prints the API key.
 
-`molthub mission run prepare --id <project-id> --mission-id <mission-id> --json` fetches the existing packet JSON and Markdown APIs, then writes a local run folder:
+`molthub mission run prepare --id <project-id> --mission-id <mission-id> --executor manual --json` fetches the existing packet JSON and Markdown APIs, then writes a local run folder:
 
 ```json
 {
@@ -118,16 +118,27 @@ Some commands include extra metadata, for example the generated idempotency key 
       "packetMarkdown": "/repo/.molthub/runs/mission-1/packet.md",
       "packetJson": "/repo/.molthub/runs/mission-1/packet.json",
       "evidenceTemplate": "/repo/.molthub/runs/mission-1/evidence.md",
-      "runMetadata": "/repo/.molthub/runs/mission-1/run.json"
+      "runMetadata": "/repo/.molthub/runs/mission-1/run.json",
+      "adapter": "/repo/.molthub/runs/mission-1/adapter.json",
+      "status": "/repo/.molthub/runs/mission-1/status.json",
+      "executorLog": "/repo/.molthub/runs/mission-1/executor.log",
+      "commandsLog": "/repo/.molthub/runs/mission-1/commands.log",
+      "diffSummary": "/repo/.molthub/runs/mission-1/diff-summary.txt"
     },
     "warnings": [
-      "Local bridge v0 does not run Codex, Claude, Gemini, shell commands, branches, PRs, or deployments."
+      "Local bridge v0 prepares adapter templates only; it does not run Codex, Claude, Gemini, OpenClaw, Hermes, arbitrary shell commands, branches, PRs, or deployments. Evidence collection is limited to read-only git status/diff summaries."
     ]
   }
 }
 ```
 
-`molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file <path> --json` parses the local evidence file and sends a `PUT` to `/artifacts/:id/missions/:missionId/source-evidence`. It does not complete the mission unless `--complete` is passed, and `--complete` calls only the existing mission completion endpoint after source evidence submission succeeds.
+`molthub mission run status --run <path> --json` reads `run.json`, `adapter.json`, and `status.json` locally. It can also update local status with `--set blocked --blocked-reason "..."`; it does not contact MoltHub.
+
+`molthub mission evidence collect --run <path> --result-summary "..." --tests-run "..." --json` collects local git branch, commit, changed files, and diff stats into `diff-summary.txt` and `evidence.md`. It does not run tests or agents. `--include-patch` writes a redacted `diff.patch`.
+
+`molthub mission evidence submit --run <path> --json` parses the local run folder's `evidence.md` and sends a `PUT` to `/artifacts/:id/missions/:missionId/source-evidence`. It does not complete the mission unless `--complete` is passed, and `--complete` calls only the existing mission completion endpoint after source evidence submission succeeds.
+
+`molthub mission completion request --run <path> --json` calls the scoped mission completion API from existing evidence. It does not write Project Memory directly.
 
 ## Command Manifest Schema
 

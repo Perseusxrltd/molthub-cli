@@ -27,6 +27,15 @@ import {
   parseEvidenceTemplate,
 } from './bridge/evidence.js';
 import { defaultRunDirectory, writeBridgeRunPackage } from './bridge/files.js';
+import {
+  coerceRunSubmitDefaults,
+  assertEvidenceSafeForSubmit,
+  collectEvidence,
+  readLocalRun,
+  resolveRunPaths,
+  updateRunStatus,
+} from './bridge/local-run.js';
+import type { BridgeExecutorId, BridgeRunStatus } from './bridge/types.js';
 
 // Read version from package.json once at startup (single source of truth)
 const _pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
@@ -209,6 +218,40 @@ function shouldFallbackMissionListRoute(error: unknown) {
 function splitCsv(value: string | undefined) {
   if (!value) return [];
   return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+const BRIDGE_EXECUTORS: BridgeExecutorId[] = ['manual', 'codex-cli', 'hermes', 'openclaw', 'claude-code', 'gemini-cli'];
+const BRIDGE_STATUSES: BridgeRunStatus[] = ['prepared', 'running', 'blocked', 'evidence_ready', 'submitted', 'completion_requested', 'completed', 'failed', 'cancelled'];
+
+function normalizeBridgeExecutor(value: string | undefined): BridgeExecutorId {
+  const executor = (value || 'manual').trim() as BridgeExecutorId;
+  if (!BRIDGE_EXECUTORS.includes(executor)) {
+    printOutput(false, null, `Unsupported executor '${value}'.`, {
+      code: 'ERR_UNSUPPORTED_EXECUTOR',
+      details: { supported: BRIDGE_EXECUTORS },
+    });
+    process.exit(1);
+  }
+  return executor;
+}
+
+function normalizeBridgeStatus(value: string | undefined): BridgeRunStatus {
+  const status = (value || '').trim() as BridgeRunStatus;
+  if (!BRIDGE_STATUSES.includes(status)) {
+    printOutput(false, null, `Unsupported run status '${value}'.`, {
+      code: 'ERR_UNSUPPORTED_STATUS',
+      details: { supported: BRIDGE_STATUSES },
+    });
+    process.exit(1);
+  }
+  return status;
+}
+
+function normalizePlanMode(value: string | undefined): 'on' | 'off' | null {
+  if (!value) return null;
+  if (value === 'on' || value === 'off') return value;
+  printOutput(false, null, 'Plan mode must be on or off.', { code: 'ERR_BAD_PLAN_MODE' });
+  process.exit(1);
 }
 
 function unwrapPacketMarkdown(data: any): string {
@@ -1282,15 +1325,18 @@ bridgeCmd.command('setup')
       requiredCapabilities: [
         'read_mission_packet',
         'submit_mission_source_evidence',
+        'read_private_project_context (project agent runner key only, for inspect/plan/readiness/action-list)',
         'complete_mission (optional, only for --complete)',
       ],
       commands: [
         'molthub mission run prepare --id <project-id> --mission-id <mission-id>',
+        'molthub mission run status --run .molthub/runs/<mission-id>',
+        'molthub mission evidence collect --run .molthub/runs/<mission-id> --result-summary "<summary>" --tests-run "<tests>"',
         'molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md',
         'molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --complete',
       ],
       warnings: [
-        'Local bridge v0 does not run Codex, Claude, Gemini, shell commands, branches, PRs, or deployments.',
+        'Local bridge v0 does not run Codex, Claude, Gemini, OpenClaw, Hermes, arbitrary shell commands, branches, PRs, or deployments. Evidence collection is limited to local proof files and read-only git status/diff summaries.',
         'Use an owner-created agent API key with project-scoped delegation grants.',
         'Do not place secrets in packet, evidence, or run files.',
       ],
@@ -1401,11 +1447,18 @@ missionRunCmd.command('prepare')
   .requiredOption('-i, --id <id>', 'Project ID')
   .requiredOption('-m, --mission-id <missionId>', 'Mission ID')
   .option('--out <path>', 'Run folder path. Defaults to .molthub/runs/<mission-id>')
+  .option('--executor <executor>', 'Adapter template: manual, codex-cli, hermes, openclaw, claude-code, gemini-cli', 'manual')
+  .option('--orchestrator <orchestrator>', 'Optional local orchestrator label such as hermes or openclaw')
+  .option('--worktree <path>', 'Optional owner-controlled worktree path to record; this command does not create it')
+  .option('--plan-mode <mode>', 'Codex prompt mode for adapter templates: on or off. Defaults to on for codex-cli')
   .action(async (opts) => {
     await requireToken();
     const outputDir = opts.out
       ? path.resolve(process.cwd(), opts.out)
       : path.resolve(process.cwd(), defaultRunDirectory(opts.missionId));
+    const executorId = normalizeBridgeExecutor(opts.executor);
+    const planMode = normalizePlanMode(opts.planMode);
+    const worktreePath = opts.worktree ? path.resolve(process.cwd(), opts.worktree) : null;
 
     try {
       const headers = await getHeaders();
@@ -1431,25 +1484,42 @@ missionRunCmd.command('prepare')
         outputDir,
         packetJson,
         packetMarkdown: unwrapPacketMarkdown(packetMarkdownResponse),
+        runnerVersion: PKG_VERSION,
+        executorId,
+        orchestratorId: opts.orchestrator ?? null,
+        worktreePath,
+        planMode,
       });
 
       printOutput(true, {
         artifactId: opts.id,
         missionId: opts.missionId,
         outputDir: files.outputDir,
+        executor: executorId,
+        orchestrator: opts.orchestrator ?? null,
+        worktreePath,
         files: {
           packetMarkdown: files.packetMarkdownPath,
           packetJson: files.packetJsonPath,
           evidenceTemplate: files.evidenceTemplatePath,
           runMetadata: files.runMetadataPath,
+          adapter: files.adapterPath,
+          status: files.statusPath,
+          executorLog: files.executorLogPath,
+          commandsLog: files.commandsLogPath,
+          diffSummary: files.diffSummaryPath,
         },
         nextCommands: [
+          `molthub mission run status --run ${path.relative(process.cwd(), files.outputDir)}`,
+          `molthub mission evidence collect --run ${path.relative(process.cwd(), files.outputDir)} --result-summary "<summary>" --tests-run "<tests>"`,
           `molthub mission evidence submit --id ${opts.id} --mission-id ${opts.missionId} --file ${path.relative(process.cwd(), files.evidenceTemplatePath)}`,
           `molthub mission evidence submit --id ${opts.id} --mission-id ${opts.missionId} --file ${path.relative(process.cwd(), files.evidenceTemplatePath)} --complete`,
         ],
         warnings: [
-          'Local bridge v0 does not run Codex, Claude, Gemini, shell commands, branches, PRs, or deployments.',
-          'Run external tools manually outside MoltHub, then fill evidence.md.',
+          'Local bridge v0 prepares adapter templates only; it does not run Codex, Claude, Gemini, OpenClaw, Hermes, arbitrary shell commands, branches, PRs, or deployments. Evidence collection is limited to local proof files and read-only git status/diff summaries.',
+          executorId === 'codex-cli'
+            ? `Codex adapter prompt mode is Plan mode: ${planMode ?? 'on'}. Use Plan mode: off only for owner-approved implementation missions.`
+            : 'Run external tools manually outside MoltHub, then collect or fill evidence.md.',
           'Do not place secrets in packet, evidence, or run files.',
         ],
       }, 'Prepared local mission run files');
@@ -1458,18 +1528,93 @@ missionRunCmd.command('prepare')
     }
   });
 
+missionRunCmd.command('status')
+  .description('Read or update local run status without contacting MoltHub')
+  .requiredOption('--run <path>', 'Run folder path')
+  .option('--set <status>', 'Set local status: prepared, running, blocked, evidence_ready, submitted, completion_requested, completed, failed, cancelled')
+  .option('--blocked-reason <reason>', 'Blocked reason when setting status to blocked')
+  .action(async (opts) => {
+    try {
+      let updatedStatus = null;
+      if (opts.set) {
+        updatedStatus = await updateRunStatus(opts.run, normalizeBridgeStatus(opts.set), opts.blockedReason ?? null);
+      }
+      const localRun = await readLocalRun(opts.run);
+      printOutput(true, {
+        runDir: localRun.paths.runDir,
+        run: localRun.run,
+        adapter: localRun.adapter,
+        status: updatedStatus ?? localRun.status,
+      }, opts.set ? 'Updated local mission run status' : 'Fetched local mission run status');
+    } catch (error: any) {
+      printOutput(false, null, error?.message || 'Failed to read local mission run status', {
+        code: 'ERR_LOCAL_RUN_STATUS',
+      });
+      process.exit(1);
+    }
+  });
+
 const missionEvidenceCmd = missionCmd.command('evidence').description('Submit local bridge evidence');
+
+missionEvidenceCmd.command('collect')
+  .description('Collect local run proof into evidence.md without executing tools')
+  .requiredOption('--run <path>', 'Run folder path')
+  .option('--tests-run <summary>', 'Summary of tests already run locally')
+  .option('--result-summary <summary>', 'Result summary to write into evidence.md')
+  .option('--issues-blockers <summary>', 'Known issues or blockers')
+  .option('--memory-update-notes <notes>', 'Review-only learning notes for evidence.md')
+  .option('--executor-used <executor>', 'Human-readable executor label for evidence.md')
+  .option('--include-patch', 'Write a redacted diff.patch. By default only diff-summary.txt is written')
+  .action(async (opts) => {
+    try {
+      const result = await collectEvidence(opts.run, {
+        testsRun: opts.testsRun,
+        resultSummary: opts.resultSummary,
+        issuesBlockers: opts.issuesBlockers,
+        memoryUpdateNotes: opts.memoryUpdateNotes,
+        executorUsed: opts.executorUsed,
+        includePatch: Boolean(opts.includePatch),
+      });
+      printOutput(true, result, 'Collected local mission evidence');
+    } catch (error: any) {
+      printOutput(false, null, error?.message || 'Failed to collect mission evidence', {
+        code: 'ERR_EVIDENCE_COLLECT',
+      });
+      process.exit(1);
+    }
+  });
 
 missionEvidenceCmd.command('submit')
   .description('Parse local evidence and submit Source Evidence')
-  .requiredOption('-i, --id <id>', 'Project ID')
-  .requiredOption('-m, --mission-id <missionId>', 'Mission ID')
-  .requiredOption('--file <path>', 'Evidence Markdown file')
+  .option('-i, --id <id>', 'Project ID')
+  .option('-m, --mission-id <missionId>', 'Mission ID')
+  .option('--file <path>', 'Evidence Markdown file')
+  .option('--run <path>', 'Run folder path; defaults id, mission id, and file from run.json/evidence.md')
   .option('--complete', 'Also submit mission completion after source evidence is saved')
   .action(async (opts) => {
     await requireToken();
     try {
-      const evidencePath = path.resolve(process.cwd(), opts.file);
+      let runPath: string | null = null;
+      let runDefaults: { artifactId: string; missionId: string } | null = null;
+      if (opts.run) {
+        const localRun = await readLocalRun(opts.run);
+        runPath = localRun.paths.runDir;
+        runDefaults = coerceRunSubmitDefaults(localRun.run);
+      }
+      const artifactId = opts.id ?? runDefaults?.artifactId;
+      const missionId = opts.missionId ?? runDefaults?.missionId;
+      const evidencePath = opts.file
+        ? path.resolve(process.cwd(), opts.file)
+        : runPath
+          ? resolveRunPaths(runPath).evidencePath
+          : null;
+      if (!artifactId || !missionId || !evidencePath) {
+        printOutput(false, null, 'Provide --id, --mission-id, and --file, or provide --run <path>.', {
+          code: 'ERR_MISSING_EVIDENCE_INPUT',
+        });
+        process.exit(1);
+      }
+      await assertEvidenceSafeForSubmit(evidencePath);
       const markdown = await fs.readFile(evidencePath, 'utf8');
       const fields = parseEvidenceTemplate(markdown);
       const sourceEvidence = buildSourceEvidencePayload(fields);
@@ -1478,8 +1623,8 @@ missionEvidenceCmd.command('submit')
       const sourceEvidenceResult = await submitSourceEvidence({
         http: axios,
         baseUrl: BASE_URL,
-        artifactId: opts.id,
-        missionId: opts.missionId,
+        artifactId,
+        missionId,
         headers,
         payload: sourceEvidence,
       });
@@ -1488,17 +1633,21 @@ missionEvidenceCmd.command('submit')
         completionResult = await completeMissionFromEvidence({
           http: axios,
           baseUrl: BASE_URL,
-          artifactId: opts.id,
-          missionId: opts.missionId,
+          artifactId,
+          missionId,
           headers,
           evidence: completionEvidence,
           sourceEvidence,
         });
       }
+      if (runPath) {
+        await updateRunStatus(runPath, opts.complete ? 'completion_requested' : 'submitted');
+      }
 
       printOutput(true, {
-        artifactId: opts.id,
-        missionId: opts.missionId,
+        artifactId,
+        missionId,
+        runPath,
         sourceEvidence: sourceEvidenceResult,
         completed: Boolean(opts.complete),
         completion: completionResult,
@@ -1508,7 +1657,92 @@ missionEvidenceCmd.command('submit')
         printOutput(false, null, e.message, { code: 'ERR_INVALID_EVIDENCE' });
         process.exit(1);
       }
+      if (e?.message?.includes('secret-like')) {
+        printOutput(false, null, e.message, { code: 'ERR_SECRET_IN_EVIDENCE' });
+        process.exit(1);
+      }
       handleApiError(e, 'Failed to submit mission evidence');
+    }
+  });
+
+const missionCompletionCmd = missionCmd.command('completion').description('Request mission completion through the scoped mission completion API');
+
+missionCompletionCmd.command('request')
+  .description('Request completion using evidence.md or explicit evidence text')
+  .option('-i, --id <id>', 'Project ID')
+  .option('-m, --mission-id <missionId>', 'Mission ID')
+  .option('--run <path>', 'Run folder path; defaults id, mission id, and evidence.md')
+  .option('--file <path>', 'Evidence Markdown file')
+  .option('--evidence <evidence>', 'Explicit completion evidence text')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      let runPath: string | null = null;
+      let runDefaults: { artifactId: string; missionId: string } | null = null;
+      if (opts.run) {
+        const localRun = await readLocalRun(opts.run);
+        runPath = localRun.paths.runDir;
+        runDefaults = coerceRunSubmitDefaults(localRun.run);
+      }
+      const artifactId = opts.id ?? runDefaults?.artifactId;
+      const missionId = opts.missionId ?? runDefaults?.missionId;
+      if (!artifactId || !missionId) {
+        printOutput(false, null, 'Provide --id and --mission-id, or provide --run <path>.', {
+          code: 'ERR_MISSING_COMPLETION_INPUT',
+        });
+        process.exit(1);
+      }
+
+      const evidencePath = opts.file
+        ? path.resolve(process.cwd(), opts.file)
+        : runPath
+          ? resolveRunPaths(runPath).evidencePath
+          : null;
+      let evidence = opts.evidence ?? '';
+      let sourceEvidence = undefined;
+      if (!evidence && evidencePath) {
+        await assertEvidenceSafeForSubmit(evidencePath);
+        const markdown = await fs.readFile(evidencePath, 'utf8');
+        const fields = parseEvidenceTemplate(markdown);
+        evidence = buildCompletionEvidence(fields);
+        sourceEvidence = buildSourceEvidencePayload(fields);
+      }
+      if (!evidence) {
+        printOutput(false, null, 'Completion evidence is required. Provide --evidence, --file, or --run.', {
+          code: 'ERR_MISSING_COMPLETION_EVIDENCE',
+        });
+        process.exit(1);
+      }
+
+      const completionResult = await completeMissionFromEvidence({
+        http: axios,
+        baseUrl: BASE_URL,
+        artifactId,
+        missionId,
+        headers: await getHeaders(),
+        evidence,
+        sourceEvidence,
+      });
+      if (runPath) {
+        await updateRunStatus(runPath, 'completion_requested');
+      }
+
+      printOutput(true, {
+        artifactId,
+        missionId,
+        runPath,
+        completion: completionResult,
+      }, 'Mission completion requested');
+    } catch (e: any) {
+      if (e?.message?.includes('Result summary')) {
+        printOutput(false, null, e.message, { code: 'ERR_INVALID_EVIDENCE' });
+        process.exit(1);
+      }
+      if (e?.message?.includes('secret-like')) {
+        printOutput(false, null, e.message, { code: 'ERR_SECRET_IN_EVIDENCE' });
+        process.exit(1);
+      }
+      handleApiError(e, 'Failed to request mission completion');
     }
   });
 

@@ -154,17 +154,21 @@ Mission listing and discovery currently require authentication. Use `mission lis
 
 ## Local Executor Bridge
 
-Local Executor Bridge v0 helps an owner-controlled machine fetch a mission packet, prepare a local run folder, and submit source evidence back to MoltHub. It does not run Codex, Claude, Gemini, OpenClaw, Hermes, shell commands, branches, PRs, or deployments.
+Local Executor Bridge v0 helps an owner-controlled machine fetch a mission packet, prepare a local run folder, and submit source evidence back to MoltHub. It does not run Codex, Claude, Gemini, OpenClaw, Hermes, arbitrary shell commands, branches, PRs, or deployments; evidence collection is limited to local proof files and read-only git status/diff summaries.
 
 ```bash
 molthub bridge setup --json
 molthub mission packet fetch --id <project-id> --mission-id <mission-id> --format markdown --out packet.md --json
-molthub mission run prepare --id <project-id> --mission-id <mission-id> --json
-molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --json
-molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --complete --json
+molthub mission run prepare --id <project-id> --mission-id <mission-id> --executor manual --json
+molthub mission run status --run .molthub/runs/<mission-id> --json
+molthub mission evidence collect --run .molthub/runs/<mission-id> --result-summary "..." --tests-run "..." --json
+molthub mission evidence submit --run .molthub/runs/<mission-id> --json
+molthub mission completion request --run .molthub/runs/<mission-id> --json
 ```
 
-The owner-created API key needs `read_mission_packet` and `submit_mission_source_evidence`; `complete_mission` is needed only for explicit `--complete`. The generated run folder contains `packet.md`, `packet.json`, `evidence.md`, and `run.json`. Fill `evidence.md` after running tools manually outside MoltHub, then submit it as proof.
+The owner-created Local Bridge key needs `read_mission_packet` and `submit_mission_source_evidence`; `complete_mission` is needed only for explicit completion requests. A project runner key can additionally include `read_private_project_context` for inspect, plan, readiness, mission list, packet fetch, and proof submit from one scoped project key. The generated run folder contains `packet.md`, `packet.json`, `run.json`, `adapter.json`, `status.json`, `executor.log`, `commands.log`, `diff-summary.txt`, and `evidence.md`. Fill or collect `evidence.md` after running tools manually outside MoltHub, then submit it as proof.
+
+`--executor codex-cli` writes a Codex adapter template only. Codex prompts must say whether Plan mode is on; the CLI defaults Codex adapter metadata to Plan mode on and does not launch Codex.
 
 ## Governed Actions And Maintenance
 

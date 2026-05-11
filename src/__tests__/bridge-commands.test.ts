@@ -82,6 +82,7 @@ describe('Local Executor Bridge CLI commands', () => {
     expect(parsed.data.requiredCapabilities).toEqual([
       'read_mission_packet',
       'submit_mission_source_evidence',
+      'read_private_project_context (project agent runner key only, for inspect/plan/readiness/action-list)',
       'complete_mission (optional, only for --complete)',
     ]);
     expect(JSON.stringify(parsed)).not.toContain('mh_live');
@@ -144,8 +145,25 @@ describe('Local Executor Bridge CLI commands', () => {
       expect(await fs.pathExists(path.join(outDir, 'packet.json'))).toBe(true);
       expect(await fs.pathExists(path.join(outDir, 'evidence.md'))).toBe(true);
       expect(await fs.pathExists(path.join(outDir, 'run.json'))).toBe(true);
+      expect(await fs.pathExists(path.join(outDir, 'adapter.json'))).toBe(true);
+      expect(await fs.pathExists(path.join(outDir, 'status.json'))).toBe(true);
+      expect(await fs.pathExists(path.join(outDir, 'executor.log'))).toBe(true);
+      expect(await fs.pathExists(path.join(outDir, 'commands.log'))).toBe(true);
+      expect(await fs.pathExists(path.join(outDir, 'diff-summary.txt'))).toBe(true);
       expect(fs.readFileSync(path.join(outDir, 'run.json'), 'utf8')).toContain('"noExecution": true');
-      expect(prepareParsed.data.warnings.join(' ')).toContain('does not run Codex, Claude, Gemini, shell commands, branches, PRs, or deployments');
+      expect(fs.readFileSync(path.join(outDir, 'run.json'), 'utf8')).toContain('"noCloudExecution": true');
+      expect(fs.readFileSync(path.join(outDir, 'adapter.json'), 'utf8')).toContain('"executorId": "manual"');
+      expect(fs.readFileSync(path.join(outDir, 'status.json'), 'utf8')).toContain('"status": "prepared"');
+      expect(prepareParsed.data.warnings.join(' ')).toContain('does not run Codex, Claude, Gemini, OpenClaw, Hermes, arbitrary shell commands, branches, PRs, or deployments');
+
+      const statusOutput = execSync(`${CLI_PATH} --json mission run status --run "${outDir}"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim();
+      const statusParsed = JSON.parse(statusOutput);
+      expect(statusParsed.success).toBe(true);
+      expect(statusParsed.data.status.status).toBe('prepared');
 
       const requests = fs.readFileSync(requestLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
       expect(requests.every((req) => req.auth === 'Bearer bridge-test-token')).toBe(true);
@@ -155,6 +173,169 @@ describe('Local Executor Bridge CLI commands', () => {
       server.kill();
     }
   }, 30000);
+
+  it('collects local run evidence and submits from --run path', async () => {
+    const port = await getFreeLoopbackPort();
+    const requestLogPath = path.join(testDir, 'collect-requests.jsonl');
+    const outDir = path.join(testDir, '.molthub', 'runs', 'mission-collect');
+    fs.writeFileSync(path.join(testDir, 'README.md'), '# Fixture\n');
+    execSync('git init', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    execSync('git config user.email owner@example.com', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    execSync('git config user.name Owner', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    execSync('git add README.md', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    execSync('git commit -m initial', { cwd: testDir, timeout: EXEC_TIMEOUT });
+
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const fs = require('fs');
+      const port = Number(process.argv[1]);
+      const requestLogPath = process.argv[2];
+      function reply(res, body, status = 200) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      }
+      http.createServer((req, res) => {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          fs.appendFileSync(requestLogPath, JSON.stringify({
+            method: req.method,
+            url: req.url,
+            auth: req.headers.authorization || null,
+            body: body ? JSON.parse(body) : null
+          }) + '\\n');
+          if (req.method === 'GET' && req.url === '/api/v1/artifacts/artifact-1/missions/mission-collect/packet?format=json') {
+            return reply(res, { packet: { id: 'packet-collect', version: 2, checksum: 'checksum-collect', mission: { title: 'Collect Mission' } } });
+          }
+          if (req.method === 'GET' && req.url === '/api/v1/artifacts/artifact-1/missions/mission-collect/packet?format=markdown') {
+            return reply(res, { markdown: '# Collect Mission\\n\\nRun this outside MoltHub.' });
+          }
+          if (req.method === 'PUT' && req.url === '/api/v1/artifacts/artifact-1/missions/mission-collect/source-evidence') {
+            return reply(res, { sourceEvidence: { id: 'evidence-collect' } });
+          }
+          reply(res, { error: { code: 'ERR_NOT_FOUND', message: 'Not found' } }, 404);
+        });
+      }).listen(port, '127.0.0.1', () => console.log('READY'));
+    `, String(port), requestLogPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      const env = testEnv(testDir, {
+        MOLTHUB_API_KEY: 'bridge-test-token',
+        MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+      });
+
+      execSync(`${CLI_PATH} --json mission run prepare --id artifact-1 --mission-id mission-collect --out "${outDir}" --executor codex-cli`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      });
+      fs.appendFileSync(path.join(testDir, 'README.md'), 'Changed locally.\n');
+      fs.writeFileSync(path.join(testDir, '.env'), 'MOLTHUB_API_KEY=mh_live_should_not_leak\n');
+      const collectOutput = execSync(`${CLI_PATH} --json mission evidence collect --run "${outDir}" --result-summary "Collected local proof with mh_live_should_not_leak." --tests-run "npm test"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim();
+      const submitOutput = execSync(`${CLI_PATH} --json mission evidence submit --run "${outDir}"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim();
+      const collectParsed = JSON.parse(collectOutput);
+      const submitParsed = JSON.parse(submitOutput);
+
+      expect(collectParsed.success).toBe(true);
+      expect(collectParsed.data.changedPaths).toContain('README.md');
+      expect(collectParsed.data.changedPaths).not.toContain('.env');
+      expect(collectParsed.data.redaction.omittedSensitivePathCount).toBeGreaterThanOrEqual(1);
+      expect(collectParsed.data.redaction.redactedOutputs).toContain('evidence.md');
+      const evidence = fs.readFileSync(path.join(outDir, 'evidence.md'), 'utf8');
+      expect(evidence).toContain('Result summary: Collected local proof with [REDACTED:molthub_api_key].');
+      expect(evidence).not.toContain('mh_live_should_not_leak');
+      expect(evidence).not.toContain('.env');
+      expect(fs.readFileSync(path.join(outDir, 'diff-summary.txt'), 'utf8')).not.toContain('.env');
+      expect(fs.readFileSync(path.join(outDir, 'status.json'), 'utf8')).toContain('"status": "submitted"');
+      expect(fs.readFileSync(path.join(outDir, 'adapter.json'), 'utf8')).toContain('"executorId": "codex-cli"');
+      expect(fs.readFileSync(path.join(outDir, 'adapter.json'), 'utf8')).toContain('"planMode": "on"');
+      expect(submitParsed.success).toBe(true);
+      expect(submitParsed.data.artifactId).toBe('artifact-1');
+      expect(submitParsed.data.missionId).toBe('mission-collect');
+
+      const requests = fs.readFileSync(requestLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      const evidenceRequest = requests.find((req) => req.method === 'PUT' && req.url.endsWith('/source-evidence'));
+      expect(evidenceRequest.body).toMatchObject({
+        changedPaths: expect.arrayContaining(['README.md']),
+        evidenceSummary: expect.stringContaining('Collected local proof with [REDACTED:molthub_api_key].'),
+      });
+      expect(collectOutput).not.toContain('bridge-test-token');
+      expect(submitOutput).not.toContain('bridge-test-token');
+      expect(collectOutput).not.toContain('mh_live_should_not_leak');
+      expect(submitOutput).not.toContain('mh_live_should_not_leak');
+    } finally {
+      server.kill();
+    }
+  }, 30000);
+
+  it('blocks evidence submit when evidence still contains secret-like content', async () => {
+    const outDir = path.join(testDir, '.molthub', 'runs', 'mission-secret');
+    await fs.ensureDir(outDir);
+    await fs.writeJson(path.join(outDir, 'run.json'), {
+      version: 'local_executor_bridge_v0',
+      runnerVersion: 'test',
+      projectId: 'artifact-1',
+      artifactId: 'artifact-1',
+      missionId: 'mission-secret',
+      createdAt: new Date().toISOString(),
+      preparedAt: new Date().toISOString(),
+      status: 'prepared',
+      noExecution: true,
+      noCloudExecution: true,
+      packetChecksum: null,
+      packetVersion: null,
+      packetSource: null,
+      worktreePath: null,
+      executorId: 'manual',
+      orchestratorId: null,
+      adapterPath: 'adapter.json',
+      statusPath: 'status.json',
+      redactionSummary: {
+        checkedFiles: [],
+        secretLikeFindings: [],
+        redactedOutputs: [],
+        omittedSensitivePathCount: 0,
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(path.join(outDir, 'evidence.md'), `# MoltHub Mission Evidence
+
+Mission: Secret Mission
+Packet checksum:
+Executor used: manual
+Branch:
+Commit:
+PR URL: No PR created
+Changed paths:
+Tests run: none
+Result summary: leaked mh_live_should_block
+Issues / blockers:
+Memory update notes:
+`, 'utf8');
+
+    let parsed: any = null;
+    try {
+      execSync(`${CLI_PATH} --json mission evidence submit --run "${outDir}"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env: testEnv(testDir, { MOLTHUB_API_KEY: 'bridge-test-token' }),
+      });
+    } catch (error: any) {
+      parsed = JSON.parse(error.stdout.toString().trim());
+    }
+
+    expect(parsed?.success).toBe(false);
+    expect(parsed?.error.code).toBe('ERR_SECRET_IN_EVIDENCE');
+    expect(JSON.stringify(parsed)).not.toContain('mh_live_should_block');
+  });
 
   it('lists missions through the dedicated mission-list route', async () => {
     const port = await getFreeLoopbackPort();
@@ -371,6 +552,61 @@ Memory update notes: Keep manual bridge boundary.
         changedPaths: ['src/index.ts'],
       });
       expect(JSON.stringify(requests)).not.toContain('Authorization:');
+    } finally {
+      server.kill();
+    }
+  }, 30000);
+
+  it('completion request fails closed when the key lacks completion scope', async () => {
+    const port = await getFreeLoopbackPort();
+    const requestLogPath = path.join(testDir, 'completion-denied-requests.jsonl');
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const fs = require('fs');
+      const port = Number(process.argv[1]);
+      const requestLogPath = process.argv[2];
+      http.createServer((req, res) => {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          fs.appendFileSync(requestLogPath, JSON.stringify({
+            method: req.method,
+            url: req.url,
+            auth: req.headers.authorization || null,
+            body: body ? JSON.parse(body) : null
+          }) + '\\n');
+          res.writeHead(403, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { code: 'ERR_FORBIDDEN', message: 'Missing complete_mission capability' } }));
+        });
+      }).listen(port, '127.0.0.1', () => console.log('READY'));
+    `, String(port), requestLogPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      let parsed: any = null;
+      try {
+        execSync(`${CLI_PATH} --json mission completion request --id artifact-1 --mission-id mission-1 --evidence "Done"`, {
+          cwd: testDir,
+          timeout: EXEC_TIMEOUT,
+          env: testEnv(testDir, {
+            MOLTHUB_API_KEY: 'bridge-test-token',
+            MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+          }),
+        });
+      } catch (error: any) {
+        parsed = JSON.parse(error.stdout.toString().trim());
+      }
+
+      expect(parsed?.success).toBe(false);
+      expect(parsed?.error.code).toBe('ERR_FORBIDDEN');
+      expect(parsed?.error.message).toContain('Missing complete_mission capability');
+      const requests = fs.readFileSync(requestLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      expect(requests).toEqual([
+        expect.objectContaining({
+          method: 'POST',
+          url: '/api/v1/artifacts/artifact-1/missions/mission-1/complete',
+        }),
+      ]);
     } finally {
       server.kill();
     }

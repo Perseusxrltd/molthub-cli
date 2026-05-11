@@ -100,13 +100,15 @@ molthub jobs complete --id <project-id> --job-id <mission-id> --evidence "Comple
 
 ## 6. Prepare A Local Bridge Run
 
-Use Local Executor Bridge v0 when the owner has approved a mission packet and wants the local machine to prepare a run folder. The bridge fetches packet files and submits proof; it does not invoke Codex, Claude, Gemini, shell commands, branches, PRs, or deployments.
+Use Local Executor Bridge v0 when the owner has approved a mission packet and wants the local machine to prepare a run folder. The bridge fetches packet files and submits proof; it does not invoke Codex, Claude, Gemini, OpenClaw, Hermes, arbitrary shell commands, branches, PRs, or deployments. Evidence collection is limited to local proof files and read-only git status/diff summaries.
 
 ```bash
 molthub bridge setup --json
 molthub mission packet fetch --id <project-id> --mission-id <mission-id> --format markdown --out packet.md --json
-molthub mission run prepare --id <project-id> --mission-id <mission-id> --json
-molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --json
+molthub mission run prepare --id <project-id> --mission-id <mission-id> --executor manual --json
+molthub mission run status --run .molthub/runs/<mission-id> --json
+molthub mission evidence collect --run .molthub/runs/<mission-id> --result-summary "..." --tests-run "..." --json
+molthub mission evidence submit --run .molthub/runs/<mission-id> --json
 ```
 
 ## 7. Execute A Governed Action

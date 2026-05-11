@@ -122,11 +122,13 @@ Local Executor Bridge commands prepare packet/evidence files for owner-approved 
 ```bash
 molthub bridge setup --json
 molthub mission packet fetch --id <project-id> --mission-id <mission-id> --format markdown --out packet.md --json
-molthub mission run prepare --id <project-id> --mission-id <mission-id> --json
-molthub mission evidence submit --id <project-id> --mission-id <mission-id> --file .molthub/runs/<mission-id>/evidence.md --json
+molthub mission run prepare --id <project-id> --mission-id <mission-id> --executor manual --json
+molthub mission run status --run .molthub/runs/<mission-id> --json
+molthub mission evidence collect --run .molthub/runs/<mission-id> --result-summary "..." --tests-run "..." --json
+molthub mission evidence submit --run .molthub/runs/<mission-id> --json
 ```
 
-The bridge does not invoke Codex, Claude, Gemini, OpenClaw, Hermes, shell commands, branches, PRs, or deployments.
+The bridge does not invoke Codex, Claude, Gemini, OpenClaw, Hermes, arbitrary shell commands, branches, PRs, or deployments. Evidence collection is limited to local proof files and read-only git status/diff summaries. Executor adapters are templates only in this release; Codex adapter metadata must state Plan mode on unless an owner-approved implementation mission explicitly authorizes Plan mode off.
 
 ## 7. Maintenance
 
