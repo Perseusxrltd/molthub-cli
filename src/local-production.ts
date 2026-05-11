@@ -1,10 +1,21 @@
 import fs from 'fs-extra';
 import path from 'path';
 import yaml from 'js-yaml';
+import {
+  LEDGER_PATH,
+  PROMPT_INDEX_PATH,
+  findProductionRecordSecrets,
+  validateLedgerFile,
+  validatePromptIndex,
+} from './ledger.js';
 
 const PRODUCTION_PACK_FILES = [
+  '.molthub/production/production-index.yml',
   '.molthub/production/current-state.yml',
   '.molthub/production/warnings.yml',
+  '.molthub/source-material/index.yml',
+  '.molthub/plans/plan-index.yml',
+  '.molthub/memory/accepted.yml',
   '.molthub/systems/implemented-systems.yml',
   '.molthub/missions/mission-index.yml',
   '.molthub/reviews/review-index.yml',
@@ -25,12 +36,19 @@ const PIPELINE_TEXT_FILES = [
   'docs/internal/production-map/future-roadmap.md',
   'docs/internal/prompt-intelligence-layer.md',
   'docs/internal/repo-production-memory-pack.md',
+  'docs/internal/repo-local-production-ledger.md',
   'docs/internal/molthub-self-dogfood-operating-plan.md',
   'src/app/docs/agents/page.tsx',
   'src/app/docs/cli/page.tsx',
   'src/app/docs/roadmap/page.tsx',
+  '.molthub/production/production-index.yml',
   '.molthub/production/current-state.yml',
   '.molthub/production/warnings.yml',
+  LEDGER_PATH,
+  PROMPT_INDEX_PATH,
+  '.molthub/source-material/index.yml',
+  '.molthub/plans/plan-index.yml',
+  '.molthub/memory/accepted.yml',
   '.molthub/systems/implemented-systems.yml',
   '.molthub/missions/mission-index.yml',
   '.molthub/reviews/review-index.yml',
@@ -103,6 +121,16 @@ export async function validateProductionPack(root = process.cwd()) {
       errors.push({ code: 'ERR_INVALID_YAML', message: error?.message || 'Invalid YAML.', file: rel });
     }
   }
+
+  const ledgerValidation = await validateLedgerFile(root, { required: true });
+  checkedFiles.push(...ledgerValidation.checkedFiles.filter((entry) => !checkedFiles.includes(entry)));
+  errors.push(...ledgerValidation.errors);
+  warnings.push(...ledgerValidation.warnings);
+
+  const promptValidation = await validatePromptIndex(root, { required: true });
+  checkedFiles.push(...promptValidation.checkedFiles.filter((entry) => !checkedFiles.includes(entry)));
+  errors.push(...promptValidation.errors);
+  warnings.push(...promptValidation.warnings);
 
   return {
     ok: errors.length === 0,
@@ -182,6 +210,11 @@ export async function checkPipelineConformance(root = process.cwd()) {
     const lines = content.split(/\r?\n/);
     lines.forEach((line, index) => {
       const lineNo = index + 1;
+      if (/^\.molthub\/(?:ledger|prompts)\//.test(rel)) {
+        for (const finding of findProductionRecordSecrets(rel, line)) {
+          addLineFinding(errors, 'ERR_SECRET_IN_PRODUCTION_RECORD', `Production record contains secret-like content (${finding.pattern}).`, rel, lineNo);
+        }
+      }
       if (/\b3\.4\.0\b/.test(line) && /molthub-cli|Local Bridge|CLI/i.test(line)) {
         addLineFinding(errors, 'ERR_STALE_CLI_VERSION', 'CLI-facing copy still mentions 3.4.0.', rel, lineNo);
       }

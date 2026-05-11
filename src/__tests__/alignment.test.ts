@@ -58,8 +58,12 @@ function waitForServerReady(server: ChildProcessWithoutNullStreams) {
 
 function writeProductionPackFixture(root: string) {
   const files = [
+    '.molthub/production/production-index.yml',
     '.molthub/production/current-state.yml',
     '.molthub/production/warnings.yml',
+    '.molthub/source-material/index.yml',
+    '.molthub/plans/plan-index.yml',
+    '.molthub/memory/accepted.yml',
     '.molthub/systems/implemented-systems.yml',
     '.molthub/missions/mission-index.yml',
     '.molthub/reviews/review-index.yml',
@@ -71,6 +75,10 @@ function writeProductionPackFixture(root: string) {
     fs.ensureDirSync(path.dirname(path.join(root, rel)));
     fs.writeFileSync(path.join(root, rel), 'version: 1\n');
   }
+  fs.ensureDirSync(path.join(root, '.molthub', 'ledger'));
+  fs.writeFileSync(path.join(root, '.molthub', 'ledger', 'events.jsonl'), '');
+  fs.ensureDirSync(path.join(root, '.molthub', 'prompts'));
+  fs.writeFileSync(path.join(root, '.molthub', 'prompts', 'prompt-index.yml'), 'version: 1\nprompts: []\n');
 }
 
 describe('MoltHub CLI Beta Alignment', () => {
@@ -535,6 +543,35 @@ summary: "A valid summary"
     );
   });
 
+  it('local production validate requires ledger projection files and validates prompt records', () => {
+    writeProductionPackFixture(testDir);
+    fs.removeSync(path.join(testDir, '.molthub', 'plans', 'plan-index.yml'));
+
+    let missingProjection: any = null;
+    try {
+      execSync(`${CLI_PATH} --json local production validate`, { cwd: testDir, timeout: EXEC_TIMEOUT });
+    } catch (error: any) {
+      missingProjection = JSON.parse(error.stdout.toString().trim());
+    }
+    expect(missingProjection?.success).toBe(false);
+    expect(missingProjection.error.details.map((entry: any) => entry.code)).toContain('ERR_MISSING_PRODUCTION_PACK_FILE');
+
+    writeProductionPackFixture(testDir);
+    fs.writeFileSync(path.join(testDir, '.molthub', 'prompts', 'prompt-index.yml'), `version: 1
+prompts:
+  - missionId: mission-1
+`);
+
+    let badPrompt: any = null;
+    try {
+      execSync(`${CLI_PATH} --json local production validate`, { cwd: testDir, timeout: EXEC_TIMEOUT });
+    } catch (error: any) {
+      badPrompt = JSON.parse(error.stdout.toString().trim());
+    }
+    expect(badPrompt?.success).toBe(false);
+    expect(badPrompt.error.details.map((entry: any) => entry.code)).toContain('ERR_PROMPT_RECORD_MISSING_FIELD');
+  });
+
   it('local production export requires explicit reviewed confirmation', () => {
     writeProductionPackFixture(testDir);
     let blocked: any = null;
@@ -567,6 +604,36 @@ summary: "A valid summary"
     expect(failed.error.code).toBe('ERR_PIPELINE_CONFORMANCE');
     expect(failed.error.details.map((entry: any) => entry.code)).toEqual(
       expect.arrayContaining(['ERR_PUBLIC_BETA_OVERCLAIM', 'ERR_AUTOMATIC_DISPATCH_CLAIM']),
+    );
+  });
+
+  it('pipeline check scans ledger and prompt records for boundary and secret violations', () => {
+    fs.ensureDirSync(path.join(testDir, '.molthub', 'ledger'));
+    fs.writeFileSync(
+      path.join(testDir, '.molthub', 'ledger', 'events.jsonl'),
+      '{"note":"MoltHub public beta ready with automatic dispatch","secret":"sk-abcdefghijklmnopqrstuvwxyz"}\n',
+    );
+    fs.ensureDirSync(path.join(testDir, '.molthub', 'prompts'));
+    fs.writeFileSync(
+      path.join(testDir, '.molthub', 'prompts', 'prompt-index.yml'),
+      'version: 1\nprompts:\n  - note: "Local Bridge runs agents"\n',
+    );
+
+    let failed: any = null;
+    try {
+      execSync(`${CLI_PATH} --json pipeline check`, { cwd: testDir, timeout: EXEC_TIMEOUT });
+    } catch (error: any) {
+      failed = JSON.parse(error.stdout.toString().trim());
+    }
+
+    expect(failed?.success).toBe(false);
+    expect(failed.error.details.map((entry: any) => entry.code)).toEqual(
+      expect.arrayContaining([
+        'ERR_PUBLIC_BETA_OVERCLAIM',
+        'ERR_AUTOMATIC_DISPATCH_CLAIM',
+        'ERR_LOCAL_BRIDGE_EXECUTION_CLAIM',
+        'ERR_SECRET_IN_PRODUCTION_RECORD',
+      ]),
     );
   });
 

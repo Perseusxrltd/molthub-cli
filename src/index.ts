@@ -41,6 +41,14 @@ import {
   exportProductionPack,
   validateProductionPack,
 } from './local-production.js';
+import {
+  LEDGER_EVENT_TYPES,
+  LEDGER_SOURCES,
+  appendLedgerEvent,
+  parseLedgerJsonOption,
+  projectLedgerStatus,
+  validateLedgerFile,
+} from './ledger.js';
 
 // Read version from package.json once at startup (single source of truth)
 const _pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
@@ -223,6 +231,11 @@ function shouldFallbackMissionListRoute(error: unknown) {
 function splitCsv(value: string | undefined) {
   if (!value) return [];
   return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+function collectRepeatedOption(value: string, previous: string[]) {
+  previous.push(value);
+  return previous;
 }
 
 const BRIDGE_EXECUTORS: BridgeExecutorId[] = ['manual', 'codex-cli', 'hermes', 'openclaw', 'claude-code', 'gemini-cli'];
@@ -757,6 +770,84 @@ pipelineCmd.command('check')
     const result = await checkPipelineConformance(process.cwd());
     printOutput(result.ok, result, result.ok ? 'Pipeline conformance check passed' : 'Pipeline conformance check failed', {
       code: 'ERR_PIPELINE_CONFORMANCE',
+      details: result.errors,
+    });
+    if (!result.ok) process.exit(1);
+  });
+
+const ledgerCmd = program.command('ledger').description('Manage the repo-local .molthub production event ledger');
+
+ledgerCmd.command('append')
+  .description('Append a sanitized production ledger event to .molthub/ledger/events.jsonl')
+  .requiredOption('--type <eventType>', 'Ledger event type')
+  .requiredOption('--actor-label <label>', 'Human-readable actor label')
+  .option('--actor-type <type>', 'Actor type. Defaults to cli-user')
+  .option('--actor-id <id>', 'Optional actor identifier')
+  .option('--project-id <id>', 'Safe MoltHub project identifier')
+  .option('--artifact-id <id>', 'Safe MoltHub artifact/project identifier')
+  .option('--mission-id <id>', 'Related mission identifier')
+  .option('--run-id <id>', 'Related local run identifier')
+  .option('--review-id <id>', 'Related review identifier')
+  .option('--memory-id <id>', 'Related memory/suggestion identifier')
+  .option('--source <source>', `Event source: ${LEDGER_SOURCES.join(', ')}`, 'cli')
+  .option('--input-json <json>', 'Inputs object as JSON', '{}')
+  .option('--output-json <json>', 'Outputs object as JSON', '{}')
+  .option('--proof <ref>', 'Proof reference. May be repeated.', collectRepeatedOption, [])
+  .option('--review-boundary <boundary>', 'Review boundary label', 'owner_review_required')
+  .option('--privacy <classification>', 'Privacy classification label', 'internal')
+  .action(async (opts) => {
+    try {
+      const result = await appendLedgerEvent(process.cwd(), {
+        eventType: opts.type,
+        actorLabel: opts.actorLabel,
+        actorType: opts.actorType,
+        actorId: opts.actorId,
+        projectId: opts.projectId,
+        artifactId: opts.artifactId,
+        missionId: opts.missionId,
+        runId: opts.runId,
+        reviewId: opts.reviewId,
+        memoryId: opts.memoryId,
+        source: opts.source,
+        sourceVersion: PKG_VERSION,
+        inputs: parseLedgerJsonOption(opts.inputJson, '--input-json'),
+        outputs: parseLedgerJsonOption(opts.outputJson, '--output-json'),
+        proofRefs: opts.proof,
+        reviewBoundary: opts.reviewBoundary,
+        privacyClassification: opts.privacy,
+      });
+      printOutput(result.ok, result, result.ok ? 'Appended production ledger event' : 'Production ledger append failed', {
+        code: 'ERR_LEDGER_APPEND',
+        details: result.errors,
+        supportedEventTypes: LEDGER_EVENT_TYPES,
+      });
+      if (!result.ok) process.exit(1);
+    } catch (error: any) {
+      printOutput(false, null, error?.message || 'Production ledger append failed', {
+        code: 'ERR_LEDGER_APPEND',
+        supportedEventTypes: LEDGER_EVENT_TYPES,
+      });
+      process.exit(1);
+    }
+  });
+
+ledgerCmd.command('validate')
+  .description('Validate .molthub/ledger/events.jsonl without changing files')
+  .action(async () => {
+    const result = await validateLedgerFile(process.cwd(), { required: true });
+    printOutput(result.ok, result, result.ok ? 'Production ledger is valid' : 'Production ledger validation failed', {
+      code: 'ERR_LEDGER_INVALID',
+      details: result.errors,
+    });
+    if (!result.ok) process.exit(1);
+  });
+
+ledgerCmd.command('project')
+  .description('Inspect repo-local ledger and production projection coverage without changing files')
+  .action(async () => {
+    const result = await projectLedgerStatus(process.cwd());
+    printOutput(result.ok, result, result.ok ? 'Fetched production ledger project status' : 'Production ledger project status has errors', {
+      code: 'ERR_LEDGER_PROJECT_STATUS',
       details: result.errors,
     });
     if (!result.ok) process.exit(1);
