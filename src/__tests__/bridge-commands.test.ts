@@ -277,6 +277,74 @@ describe('Local Executor Bridge CLI commands', () => {
     }
   }, 30000);
 
+  it('does not execute repo-configured fsmonitor hooks while collecting evidence', () => {
+    const outDir = path.join(testDir, '.molthub', 'runs', 'mission-fsmonitor');
+    const markerPath = path.join(testDir, 'fsmonitor-ran.txt');
+    const fsmonitorPath = path.join(testDir, 'fsmonitor.cmd');
+    fs.writeFileSync(path.join(testDir, 'README.md'), '# Fixture\n');
+    execSync('git init', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    execSync('git config user.email owner@example.com', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    execSync('git config user.name Owner', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    execSync('git add README.md', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    execSync('git commit -m initial', { cwd: testDir, timeout: EXEC_TIMEOUT });
+    fs.writeFileSync(fsmonitorPath, `@echo off\r\necho unsafe>"${markerPath}"\r\nexit /b 0\r\n`);
+    execSync(`git config core.fsmonitor "${fsmonitorPath.replace(/\\/g, '/')}"`, { cwd: testDir, timeout: EXEC_TIMEOUT });
+    fs.appendFileSync(path.join(testDir, 'README.md'), 'Changed locally.\n');
+
+    fs.ensureDirSync(outDir);
+    fs.writeJsonSync(path.join(outDir, 'run.json'), {
+      version: 'local_executor_bridge_v0',
+      runnerVersion: 'test',
+      projectId: 'artifact-1',
+      artifactId: 'artifact-1',
+      missionId: 'mission-fsmonitor',
+      createdAt: new Date().toISOString(),
+      preparedAt: new Date().toISOString(),
+      status: 'prepared',
+      noExecution: true,
+      noCloudExecution: true,
+      packetChecksum: null,
+      packetVersion: null,
+      packetSource: null,
+      worktreePath: testDir,
+      executorId: 'manual',
+      orchestratorId: null,
+      adapterPath: 'adapter.json',
+      statusPath: 'status.json',
+      redactionSummary: {
+        checkedFiles: [],
+        secretLikeFindings: [],
+        redactedOutputs: [],
+        omittedSensitivePathCount: 0,
+      },
+    }, { spaces: 2 });
+    fs.writeFileSync(path.join(outDir, 'evidence.md'), `# MoltHub Mission Evidence
+
+Mission: Fsmonitor Mission
+Packet checksum:
+Executor used: manual
+Branch:
+Commit:
+PR URL:
+Changed paths:
+Tests run:
+Result summary:
+Issues / blockers:
+Memory update notes:
+`, 'utf8');
+
+    const collectOutput = execSync(`${CLI_PATH} --json mission evidence collect --run "${outDir}" --result-summary "Collected without hook execution." --tests-run "npm test"`, {
+      cwd: testDir,
+      timeout: EXEC_TIMEOUT,
+      env: testEnv(testDir),
+    }).toString().trim();
+    const parsed = JSON.parse(collectOutput);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.changedPaths).toContain('README.md');
+    expect(fs.existsSync(markerPath)).toBe(false);
+  }, 30000);
+
   it('blocks evidence submit when evidence still contains secret-like content', async () => {
     const outDir = path.join(testDir, '.molthub', 'runs', 'mission-secret');
     await fs.ensureDir(outDir);

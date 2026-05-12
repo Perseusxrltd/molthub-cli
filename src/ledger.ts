@@ -196,6 +196,56 @@ function validateForbiddenRepoNames(root: string, errors: Finding[]) {
   }
 }
 
+function isPathInsideRoot(root: string, target: string) {
+  const relative = path.relative(root, target);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function lstatIfExists(absolutePath: string) {
+  try {
+    return await fs.lstat(absolutePath);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function assertLedgerAppendPathSafe(root: string, errors: Finding[]) {
+  const resolvedRoot = path.resolve(root);
+  const ledgerPath = path.resolve(resolvedRoot, LEDGER_PATH);
+
+  if (!isPathInsideRoot(resolvedRoot, ledgerPath)) {
+    addFinding(errors, 'ERR_LEDGER_PATH_UNSAFE', `Ledger path escapes repository root: ${LEDGER_PATH}`, LEDGER_PATH);
+    return null;
+  }
+
+  const relativeParts = path.relative(resolvedRoot, ledgerPath).split(path.sep).filter(Boolean);
+  let cursor = resolvedRoot;
+  for (let index = 0; index < relativeParts.length; index += 1) {
+    cursor = path.join(cursor, relativeParts[index]);
+    const stat = await lstatIfExists(cursor);
+    if (!stat) continue;
+
+    const relative = path.relative(resolvedRoot, cursor).replace(/\\/g, '/');
+    if (stat.isSymbolicLink()) {
+      addFinding(errors, 'ERR_LEDGER_PATH_UNSAFE', `Ledger path contains a symlink: ${relative}`, relative);
+      return null;
+    }
+
+    const isFinal = index === relativeParts.length - 1;
+    if (!isFinal && !stat.isDirectory()) {
+      addFinding(errors, 'ERR_LEDGER_PATH_UNSAFE', `Ledger path component is not a directory: ${relative}`, relative);
+      return null;
+    }
+    if (isFinal && !stat.isFile()) {
+      addFinding(errors, 'ERR_LEDGER_PATH_UNSAFE', `Ledger path is not a regular file: ${relative}`, relative);
+      return null;
+    }
+  }
+
+  return ledgerPath;
+}
+
 function validateLedgerEventObject(event: unknown, errors: Finding[], file: string, line?: number) {
   const record = asObject(event);
   if (Object.keys(record).length === 0) {
@@ -294,8 +344,17 @@ export async function appendLedgerEvent(root: string, options: LedgerAppendOptio
     return { ok: false, written: null, event: null, errors };
   }
 
-  const ledgerPath = path.join(root, LEDGER_PATH);
+  const ledgerPath = await assertLedgerAppendPathSafe(root, errors);
+  if (!ledgerPath || errors.length > 0) {
+    return { ok: false, written: null, event: null, errors };
+  }
+
   await fs.ensureDir(path.dirname(ledgerPath));
+  await assertLedgerAppendPathSafe(root, errors);
+  if (errors.length > 0) {
+    return { ok: false, written: null, event: null, errors };
+  }
+
   await fs.appendFile(ledgerPath, `${JSON.stringify(eventWithChecksum)}\n`, 'utf8');
   return { ok: true, written: LEDGER_PATH, event: eventWithChecksum, errors: [] };
 }

@@ -966,6 +966,97 @@ prompts:
     }
   }, 30000);
 
+  it('encodes attacker-controlled credentialed path segments before API requests', async () => {
+    const port = 51000 + Math.floor(Math.random() * 2000);
+    const requestLogPath = path.join(testDir, 'encoded-path-requests.jsonl');
+    const encodedProject = '..%2Fproject%3Fx%3D1';
+    const encodedRun = 'run%2F1%3Fx%3D2';
+    const encodedMission = 'mission%2F1%3Fx%3D2';
+    const encodedDraft = '..%2Fdraft%3Fx%3D1';
+
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const fs = require('fs');
+      const port = Number(process.argv[1]);
+      const requestLogPath = process.argv[2];
+
+      function reply(res, body, status = 200) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      }
+
+      http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => {
+          fs.appendFileSync(requestLogPath, JSON.stringify({
+            method: req.method,
+            url: req.url,
+            auth: req.headers.authorization || null,
+            body: body ? JSON.parse(body) : null
+          }) + '\\n');
+
+          if (req.method === 'GET' && req.url === '/api/v1/artifacts/${encodedProject}/operator-runs/${encodedRun}') {
+            return reply(res, { success: true, data: { id: 'run-1', status: 'completed' } });
+          }
+          if (req.method === 'POST' && req.url === '/api/v1/artifacts/${encodedProject}/actions/execute') {
+            return reply(res, { success: true, actionId: 'refresh_source', status: 'dry_run_only', message: 'ok' });
+          }
+          if (req.method === 'POST' && req.url === '/api/v1/artifacts/${encodedProject}/missions/${encodedMission}/claim') {
+            return reply(res, { success: true, data: { claim: { id: 'claim-1' } } }, 201);
+          }
+          if (req.method === 'POST' && req.url === '/api/v1/agent/drafts/${encodedDraft}/publish') {
+            return reply(res, { success: true, draft: { id: 'draft-1' } });
+          }
+
+          reply(res, { success: false, error: { code: 'ERR_NOT_FOUND', message: 'Not found' } }, 404);
+        });
+      }).listen(port, '127.0.0.1', () => console.log('READY'));
+    `, String(port), requestLogPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    try {
+      await waitForServerReady(server);
+      const env = emptyAuthEnv(testDir, {
+        MOLTHUB_API_KEY: 'encoded-path-token',
+        MOLTHUB_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
+      });
+
+      JSON.parse(execSync(`${CLI_PATH} --json project operator report --id "../project?x=1" --run "run/1?x=2"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      JSON.parse(execSync(`${CLI_PATH} --json project actions execute --id "../project?x=1" --action refresh_source --dry-run`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      JSON.parse(execSync(`${CLI_PATH} --json mission claim --id "../project?x=1" --mission-id "mission/1?x=2"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+      JSON.parse(execSync(`${CLI_PATH} --json draft publish "../draft?x=1"`, {
+        cwd: testDir,
+        timeout: EXEC_TIMEOUT,
+        env,
+      }).toString().trim());
+
+      const requests = fs.readFileSync(requestLogPath, 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      expect(requests.map((req) => req.url)).toEqual([
+        `/api/v1/artifacts/${encodedProject}/operator-runs/${encodedRun}`,
+        `/api/v1/artifacts/${encodedProject}/actions/execute`,
+        `/api/v1/artifacts/${encodedProject}/missions/${encodedMission}/claim`,
+        `/api/v1/agent/drafts/${encodedDraft}/publish`,
+      ]);
+      expect(requests.every((req) => req.auth === 'Bearer encoded-path-token')).toBe(true);
+      expect(JSON.stringify(requests)).not.toContain('/../');
+      expect(JSON.stringify(requests)).not.toContain('?x=1');
+    } finally {
+      server.kill();
+    }
+  }, 30000);
+
   it('project operator report returns ERR_NOT_FOUND when the run is absent', async () => {
     const port = 49000 + Math.floor(Math.random() * 2000);
 

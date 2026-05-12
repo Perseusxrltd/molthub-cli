@@ -63,14 +63,31 @@ function cleanString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
 
+function safeGitArgs(args: string[]) {
+  return [
+    '-c', 'core.fsmonitor=false',
+    '-c', 'core.untrackedCache=false',
+    '-c', 'diff.external=',
+    '-c', 'core.pager=cat',
+    ...args,
+  ];
+}
+
 function runGit(cwd: string, args: string[]) {
   try {
-    return execFileSync('git', args, {
+    return execFileSync('git', safeGitArgs(args), {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 10000,
       maxBuffer: 1024 * 1024 * 8,
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_EXTERNAL_DIFF: '',
+        GIT_PAGER: 'cat',
+        GIT_TERMINAL_PROMPT: '0',
+      },
     }).replace(/\s+$/, '');
   } catch {
     return '';
@@ -272,7 +289,7 @@ export async function collectEvidence(runPath: string, options: EvidenceCollectO
   const allChangedPaths = parseChangedPaths(statusOutput);
   const { safe: changedPaths, omittedSensitivePathCount } = partitionChangedPaths(allChangedPaths);
   const diffStat = changedPaths.length > 0
-    ? runGit(worktreePath, ['diff', '--stat', '--', ...changedPaths])
+    ? runGit(worktreePath, ['diff', '--no-ext-diff', '--no-textconv', '--stat', '--', ...changedPaths])
     : '';
   const diffSummary = [
     `Collected at: ${new Date().toISOString()}`,
@@ -291,7 +308,7 @@ export async function collectEvidence(runPath: string, options: EvidenceCollectO
 
   let patchWritten = false;
   if (options.includePatch && changedPaths.length > 0) {
-    const patch = runGit(worktreePath, ['diff', '--no-ext-diff', '--binary', '--', ...changedPaths]);
+    const patch = runGit(worktreePath, ['diff', '--no-ext-diff', '--no-textconv', '--binary', '--', ...changedPaths]);
     await fs.writeFile(paths.diffPatchPath, `${redactSecretLikeContent(patch)}\n`, 'utf8');
     patchWritten = true;
   }

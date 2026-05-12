@@ -144,4 +144,56 @@ describe('Repo-local production ledger CLI', () => {
       expect.arrayContaining(['ERR_FORBIDDEN_MOLTHUB_YAML', 'ERR_FORBIDDEN_MOTHUB_DIR']),
     );
   });
+
+  it('ledger append refuses to follow a ledger file symlink outside the repo', () => {
+    const outsidePath = path.join(testDir, '..', `${path.basename(testDir)}-outside-ledger.jsonl`);
+    fs.ensureDirSync(path.join(testDir, '.molthub', 'ledger'));
+    fs.writeFileSync(outsidePath, 'outside\n');
+
+    try {
+      fs.symlinkSync(outsidePath, path.join(testDir, '.molthub', 'ledger', 'events.jsonl'), 'file');
+    } catch (error: any) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        fs.removeSync(outsidePath);
+        return;
+      }
+      throw error;
+    }
+
+    try {
+      const failed = parseFailure('ledger append --type project.production_pack_initialized --actor-label "Owner"', testDir);
+
+      expect(failed.success).toBe(false);
+      expect(failed.error.details.map((entry: any) => entry.code)).toContain('ERR_LEDGER_PATH_UNSAFE');
+      expect(fs.readFileSync(outsidePath, 'utf8')).toBe('outside\n');
+    } finally {
+      fs.removeSync(outsidePath);
+    }
+  });
+
+  it('ledger append refuses to follow an intermediate ledger directory symlink outside the repo', () => {
+    const outsideDir = path.join(testDir, '..', `${path.basename(testDir)}-outside-ledger-dir`);
+    fs.ensureDirSync(path.join(testDir, '.molthub'));
+    fs.ensureDirSync(outsideDir);
+
+    try {
+      fs.symlinkSync(outsideDir, path.join(testDir, '.molthub', 'ledger'), 'junction');
+    } catch (error: any) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        fs.removeSync(outsideDir);
+        return;
+      }
+      throw error;
+    }
+
+    try {
+      const failed = parseFailure('ledger append --type project.production_pack_initialized --actor-label "Owner"', testDir);
+
+      expect(failed.success).toBe(false);
+      expect(failed.error.details.map((entry: any) => entry.code)).toContain('ERR_LEDGER_PATH_UNSAFE');
+      expect(fs.existsSync(path.join(outsideDir, 'events.jsonl'))).toBe(false);
+    } finally {
+      fs.removeSync(outsideDir);
+    }
+  });
 });
