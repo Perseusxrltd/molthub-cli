@@ -212,11 +212,20 @@ tasks: ["task1"]
     }
   });
 
-  it('agent install-instructions requires auth before personalized generation', () => {
-    expectNoAuth('agent install-instructions --personalize --targets agents --json', testDir);
+  it('agent install-instructions uses static templates when personalization is requested', () => {
+    const parsed = JSON.parse(execSync(`${CLI_PATH} --json agent install-instructions --personalize --targets agents`, {
+      cwd: testDir,
+      timeout: EXEC_TIMEOUT,
+      env: emptyAuthEnv(testDir),
+    }).toString().trim());
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.personalized).toBe(false);
+    expect(parsed.data.cacheHit).toBe(false);
+    expect(parsed.data.personalizationWarning).toContain('disabled until signed packs exist');
   });
 
-  it('agent install-instructions personalizes once and reuses the fingerprint cache', async () => {
+  it('agent install-instructions does not call unsigned server personalization or use a repo cache', async () => {
     const port = 41000 + Math.floor(Math.random() * 2000);
     const countPath = path.join(testDir, 'activation-count.txt');
     const bodyPath = path.join(testDir, 'activation-body.json');
@@ -272,26 +281,20 @@ tasks: ["task1"]
         env,
       }).toString().trim();
       const second = JSON.parse(secondOutput);
-      const sentBody = JSON.parse(fs.readFileSync(bodyPath, 'utf8'));
 
-      expect(first.data.personalized).toBe(true);
+      expect(first.data.personalized).toBe(false);
       expect(first.data.cacheHit).toBe(false);
-      expect(second.data.personalized).toBe(true);
-      expect(second.data.cacheHit).toBe(true);
-      expect(fs.readFileSync(countPath, 'utf8')).toBe('1');
-      expect(sentBody).toMatchObject({
-        templateVersion: '2026-05-02-v2',
-        cliVersion: '3.4.0',
-        targets: ['agents'],
-        manifestHash: 'missing',
-      });
-      expect(JSON.stringify(sentBody)).not.toContain('mh_live_test_token');
+      expect(first.data.personalizationWarning).toContain('disabled until signed packs exist');
+      expect(second.data.personalized).toBe(false);
+      expect(second.data.cacheHit).toBe(false);
+      expect(fs.readFileSync(countPath, 'utf8')).toBe('0');
+      expect(fs.existsSync(bodyPath)).toBe(false);
     } finally {
       server.kill();
     }
   }, 30000);
 
-  it('agent install-instructions preserves server fallback status and caches it', async () => {
+  it('agent install-instructions ignores unsigned server fallback packs', async () => {
     const port = 43000 + Math.floor(Math.random() * 2000);
     const countPath = path.join(testDir, 'activation-fallback-count.txt');
     fs.writeFileSync(countPath, '0');
@@ -342,11 +345,11 @@ tasks: ["task1"]
       }).toString().trim());
 
       expect(first.data.personalized).toBe(false);
-      expect(first.data.personalizationWarning).toContain('monthly_budget_exhausted');
+      expect(first.data.personalizationWarning).toContain('disabled until signed packs exist');
       expect(second.data.personalized).toBe(false);
-      expect(second.data.cacheHit).toBe(true);
-      expect(second.data.personalizationWarning).toContain('Cached server fallback');
-      expect(fs.readFileSync(countPath, 'utf8')).toBe('1');
+      expect(second.data.cacheHit).toBe(false);
+      expect(second.data.personalizationWarning).toContain('disabled until signed packs exist');
+      expect(fs.readFileSync(countPath, 'utf8')).toBe('0');
     } finally {
       server.kill();
     }
@@ -391,7 +394,7 @@ tasks: ["task1"]
 
       expect(parsed.success).toBe(true);
       expect(parsed.data.personalized).toBe(false);
-      expect(parsed.data.personalizationWarning).toContain('invalid pack');
+      expect(parsed.data.personalizationWarning).toContain('disabled until signed packs exist');
       expect(parsed.data.files[0].content).toContain('system, developer, and user instructions');
     } finally {
       server.kill();
