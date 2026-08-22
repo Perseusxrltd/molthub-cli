@@ -3,10 +3,7 @@ import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'child_proc
 import fs from 'fs-extra';
 import net from 'net';
 import path from 'path';
-
-const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
-const CLI_PATH = `node --import "data:text/javascript,import{register}from'node:module';import{pathToFileURL}from'node:url';register('ts-node/esm',pathToFileURL('./'));" "${CLI_ABS_PATH}"`;
-const EXEC_TIMEOUT = 15000;
+import { CLI_PATH, EXEC_TIMEOUT } from './cli-path.js';
 
 function testEnv(testDir: string, extra: Record<string, string> = {}) {
   return {
