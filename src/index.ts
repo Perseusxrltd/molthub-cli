@@ -752,6 +752,7 @@ localCmd.command('init')
 
     const frontmatter = yaml.dump(initialData, {
       forceQuotes: true,
+      quotingType: '"',
       lineWidth: 0,
       noRefs: true,
     }).trimEnd();
