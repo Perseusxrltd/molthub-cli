@@ -30,6 +30,7 @@ import { defaultRunDirectory, writeBridgeRunPackage } from './bridge/files.js';
 import {
   coerceRunSubmitDefaults,
   assertEvidenceSafeForSubmit,
+  assertEvidenceTextSafe,
   collectEvidence,
   readLocalRun,
   resolveRunPaths,
@@ -81,6 +82,9 @@ function printOutput(success: boolean, data: any, message: string, errorDetails?
           details: errorDetails && Object.prototype.hasOwnProperty.call(errorDetails, 'details') ? errorDetails.details : errorDetails 
         } 
       };
+      if (data !== null && data !== undefined) {
+        payload.data = data;
+      }
       if (errorDetails?.suggestedNextCommands) {
         payload.suggestedNextCommands = errorDetails.suggestedNextCommands;
       }
@@ -115,6 +119,28 @@ function normalizeErrorMessage(value: any, fallbackMessage: string): string {
   }
 }
 
+const LOCAL_IO_ERROR_CODES = new Set([
+  'ENOENT',
+  'EACCES',
+  'EPERM',
+  'EISDIR',
+  'ENOTDIR',
+  'ENOSPC',
+  'EROFS',
+  'EEXIST',
+  'EMFILE',
+  'ENFILE',
+  'EIO',
+  'ENAMETOOLONG',
+  'ELOOP',
+]);
+
+const MOLTHUB_LIVE_API_KEY_RE = /^mh_live_[0-9a-f]{48}$/;
+
+function isLocalIoError(error: any) {
+  return Boolean(error && typeof error.code === 'string' && LOCAL_IO_ERROR_CODES.has(error.code));
+}
+
 function normalizeApiError(error: any, fallbackMessage: string) {
   if (error.code === 'ECONNABORTED') {
     return { code: "ERR_TIMEOUT", message: "Connection timed out", details: { code: error.code } };
@@ -132,6 +158,14 @@ function normalizeApiError(error: any, fallbackMessage: string) {
       code,
       message: normalizeErrorMessage(apiError ?? body?.message ?? body, fallbackMessage),
       details: body
+    };
+  }
+
+  if (isLocalIoError(error)) {
+    return {
+      code: "ERR_LOCAL_IO",
+      message: normalizeErrorMessage(error?.message, fallbackMessage),
+      details: { code: error.code, path: error.path ?? error.dest ?? null },
     };
   }
 
@@ -278,6 +312,31 @@ function unwrapPacketMarkdown(data: any): string {
   if (typeof data?.data?.markdown === 'string') return data.data.markdown;
   if (typeof data?.packet?.markdown === 'string') return data.packet.markdown;
   return JSON.stringify(data, null, 2);
+}
+
+function redactManagementToken(value: any): any {
+  if (Array.isArray(value)) return value.map(redactManagementToken);
+  if (!value || typeof value !== 'object') return value;
+  const next: Record<string, any> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === 'managementToken') continue;
+    next[key] = redactManagementToken(entry);
+  }
+  return next;
+}
+
+function extractApplyResult(body: any) {
+  const unwrapped = body?.data ?? body ?? {};
+  const application = unwrapped.application ?? body?.application ?? unwrapped;
+  return {
+    id: application?.id ?? unwrapped.id ?? body?.id ?? null,
+    managementToken: unwrapped.managementToken ?? body?.managementToken ?? null,
+  };
+}
+
+function assertInlineEvidenceSafe(evidence: string | undefined) {
+  if (!evidence) return;
+  assertEvidenceTextSafe(evidence);
 }
 
 async function writeTextOutput(filePath: string, content: string) {
@@ -553,10 +612,13 @@ applyCmd.command('agent')
     try {
       if (!isJsonMode()) console.log(chalk.cyan('🚀 Submitting pending agent application...'));
       const res = await axios.post(api(['agent', 'apply']), payload, { timeout: 15000 });
-      
-      const safeResponse = { ...(res.data || {}) };
-      delete safeResponse.managementToken;
-      printOutput(true, safeResponse, "Application created. Human operator must claim via email.");
+      const extracted = extractApplyResult(res.data);
+      if (extracted.id && extracted.managementToken) {
+        const config = await loadConfig();
+        config.pending = { id: extracted.id, token: extracted.managementToken };
+        await saveConfig(config);
+      }
+      printOutput(true, redactManagementToken(res.data || {}), "Application created. Human operator must claim via email.");
     } catch (e) {
       handleApiError(e, "Failed to submit application");
     }
@@ -564,18 +626,27 @@ applyCmd.command('agent')
 
 applyCmd.command('status')
   .description('Check the status of your pending application')
-  .action(async () => {
+  .option('--id <id>', 'Pending application ID')
+  .option('--token <token>', 'Pending application management token')
+  .action(async (opts) => {
     const config = await loadConfig();
-    if (!config.pending?.id || !config.pending?.token) {
+    const id = opts.id || config.pending?.id;
+    const token = opts.token || config.pending?.token;
+    if (!id || !token) {
       printOutput(false, null, "No pending application found locally.", { code: "ERR_NO_PENDING" });
       process.exit(1);
     }
 
+    if (opts.id && opts.token) {
+      config.pending = { id: opts.id, token: opts.token };
+      await saveConfig(config);
+    }
+
     try {
-      const res = await axios.get(api(['agent', 'apply', config.pending.id]), {
-        headers: { 'Authorization': `Bearer ${config.pending.token}` }
+      const res = await axios.get(api(['agent', 'apply', id]), {
+        headers: { 'Authorization': `Bearer ${token}` }
       });
-      printOutput(true, res.data.application, "Fetched application status");
+      printOutput(true, res.data.application ?? unwrapApiData(res.data), "Fetched application status");
     } catch (e) {
       handleApiError(e, "Failed to fetch status");
     }
@@ -587,13 +658,37 @@ applyCmd.command('status')
 const authCmd = program.command('auth').description('Manage authentication and identity');
 
 authCmd.command('login')
-  .description('Store API key locally')
+  .description('Validate and store an agent API key locally after /agent/me succeeds')
   .argument('<token>', 'API Key')
   .action(async (token) => {
-    const config = await loadConfig();
-    config.token = token;
-    await saveConfig(config);
-    printOutput(true, null, "Authenticated and stored token securely.");
+    if (!MOLTHUB_LIVE_API_KEY_RE.test(token)) {
+      printOutput(false, null, "Invalid API key format. Expected mh_live_ followed by 48 hexadecimal characters.", {
+        code: "ERR_INVALID_API_KEY",
+        details: { expected: "mh_live_<48-hex>" },
+      });
+      process.exit(1);
+    }
+
+    try {
+      await axios.get(api(['agent', 'me']), {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'User-Agent': `MoltHub-CLI/${PKG_VERSION}`,
+        },
+        timeout: 10000,
+      });
+    } catch (e) {
+      handleApiError(e, "Failed to verify identity");
+    }
+
+    try {
+      const config = await loadConfig();
+      config.token = token;
+      await saveConfig(config);
+      printOutput(true, null, "Authenticated and stored token securely.");
+    } catch (e) {
+      handleApiError(e, "Failed to store API key");
+    }
   });
 
 authCmd.command('whoami')
@@ -655,23 +750,25 @@ localCmd.command('init')
       } catch (e) {}
     }
 
+    const frontmatter = yaml.dump(initialData, {
+      forceQuotes: true,
+      quotingType: '"',
+      lineWidth: 0,
+      noRefs: true,
+    }).trimEnd();
     const manifest = `---
-title: "${initialData.title}"
-category: "${initialData.category}"
-status: "${initialData.status}"
-version: "${initialData.version}"
-summary: "${initialData.summary}"
-tags: ${JSON.stringify(initialData.tags)}
-collaboration: ${initialData.collaboration}
-skills_needed: ${JSON.stringify(initialData.skills_needed)}
-help_wanted: "${initialData.help_wanted}"
+${frontmatter}
 ---
 
 # Overview
 Describe your project's capabilities here.
 `;
-    await fs.ensureDir(path.dirname(LOCAL_PROJECT_PATH));
-    await fs.writeFile(LOCAL_PROJECT_PATH, manifest, 'utf8');
+    try {
+      await fs.ensureDir(path.dirname(LOCAL_PROJECT_PATH));
+      await fs.writeFile(LOCAL_PROJECT_PATH, manifest, 'utf8');
+    } catch (e) {
+      handleApiError(e, "Failed to write project manifest");
+    }
     printOutput(true, { path: LOCAL_PROJECT_PATH }, "Scaffolded project manifest.");
   });
 
@@ -990,11 +1087,14 @@ projectCmd.command('discover')
   .description('Discover public projects seeking help')
   .option('--tag <tag>', 'Filter by skill/tag')
   .option('--mission-open', 'Only projects with open missions')
+  .option('--limit <limit>', 'Max projects to return')
   .action(async (opts) => {
     try {
-      // Map options to API params if standard routes support it, else just call base list for now
-      // This bridges the CLI intent with the existing public artifact listing.
-      const res = await axios.get(api(['artifacts']));
+      const params = new URLSearchParams();
+      if (opts.tag) params.set('tag', opts.tag);
+      if (opts.missionOpen) params.set('missionOpen', 'true');
+      if (opts.limit) params.set('limit', String(opts.limit));
+      const res = await axios.get(api(['artifacts'], params));
       printOutput(true, res.data, "Discovered projects");
     } catch (e) {
       handleApiError(e, "Failed to discover projects");
@@ -1138,10 +1238,10 @@ projectOperatorCmd.command('feedback')
     }
   });
 
-const projectBillingCmd = projectCmd.command('billing').description('Create owner-agent paid project billing sessions');
+const projectBillingCmd = projectCmd.command('billing').description('Create owner-agent MoltHub Plus (US$10 per project / month) billing sessions');
 
 projectBillingCmd.command('checkout')
-  .description('Create a Stripe Checkout subscription session for one project')
+  .description('Create a MoltHub Plus (US$10 per project / month) Stripe Checkout session')
   .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     await requireToken();
@@ -1154,7 +1254,7 @@ projectBillingCmd.command('checkout')
   });
 
 projectBillingCmd.command('portal')
-  .description('Create a Stripe Customer Portal session for project billing')
+  .description('Create a MoltHub Plus (US$10 per project / month) Stripe Customer Portal session')
   .requiredOption('-i, --id <id>', 'Project ID')
   .action(async (opts) => {
     await requireToken();
@@ -1844,6 +1944,7 @@ missionCompletionCmd.command('request')
           ? resolveRunPaths(runPath).evidencePath
           : null;
       let evidence = opts.evidence ?? '';
+      assertInlineEvidenceSafe(opts.evidence);
       let sourceEvidence = undefined;
       if (!evidence && evidencePath) {
         await assertEvidenceSafeForSubmit(evidencePath);
@@ -1933,10 +2034,15 @@ missionCmd.command('complete')
     await requireToken();
 
     try {
+      assertInlineEvidenceSafe(opts.evidence);
       const payload = { evidence: opts.evidence };
       const res = await axios.post(api(['artifacts', opts.id, 'missions', opts.missionId, 'complete']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Mission completion submitted");
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.message?.includes('secret-like')) {
+        printOutput(false, null, e.message, { code: 'ERR_SECRET_IN_EVIDENCE' });
+        process.exit(1);
+      }
       handleApiError(e, "Failed to submit mission completion");
     }
   });
@@ -1987,10 +2093,15 @@ jobsCmd.command('complete')
     await requireToken();
 
     try {
+      assertInlineEvidenceSafe(opts.evidence);
       const payload = { evidence: opts.evidence };
       const res = await axios.post(api(['artifacts', opts.id, 'missions', opts.jobId, 'complete']), payload, { headers: await getHeaders() });
       printOutput(true, res.data.data, "Agentic job completion submitted");
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.message?.includes('secret-like')) {
+        printOutput(false, null, e.message, { code: 'ERR_SECRET_IN_EVIDENCE' });
+        process.exit(1);
+      }
       handleApiError(e, "Failed to submit agentic job completion");
     }
   });
@@ -2075,7 +2186,12 @@ program.command('doctor')
     const hasLocal = await fs.pathExists(LOCAL_PROJECT_PATH);
     report.checks.local_manifest = hasLocal ? "FOUND" : "MISSING";
 
-    printOutput(!hasErrors, report, hasErrors ? "Doctor found issues" : "All systems normal");
+    printOutput(
+      !hasErrors,
+      report,
+      hasErrors ? "Doctor found issues" : "All systems normal",
+      hasErrors ? { code: "ERR_DOCTOR_ISSUES", details: report } : undefined,
+    );
     if (hasErrors) process.exit(1);
   });
 

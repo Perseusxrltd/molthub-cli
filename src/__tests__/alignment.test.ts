@@ -2,11 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs-extra';
 import path from 'path';
-
-const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
-// --import is the modern (non-deprecated) API; ts-node/esm --loader generates warnings on Node 22+
-const CLI_PATH = `node --import "data:text/javascript,import{register}from'node:module';import{pathToFileURL}from'node:url';register('ts-node/esm',pathToFileURL('./'));" "${CLI_ABS_PATH}"`;
-const EXEC_TIMEOUT = 15000;
+import { CLI_PATH, EXEC_TIMEOUT } from './cli-path.js';
 
 function emptyAuthEnv(testDir: string, extra: Record<string, string> = {}) {
   return {
@@ -105,7 +101,11 @@ describe('MoltHub CLI Beta Alignment', () => {
     const content = fs.readFileSync(manifestPath, 'utf8');
     expect(content).toContain('title: "Test Project"');
     expect(content).toContain('collaboration: true');
+    expect(content).toContain('source_url: ""');
     expect(content).not.toContain('- [ ] List core features here');
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1];
+    expect(frontmatter).toBeTruthy();
+    expect(frontmatter).toMatch(/^title: "Test Project"$/m);
   });
 
   it('local init migrates legacy molthub.json', () => {
@@ -690,6 +690,9 @@ prompts:
     const jobs = parsed.data.manifest.find((cmd: any) => cmd.name === 'jobs');
     const jobsDiscover = jobs.subcommands.find((cmd: any) => cmd.name === 'discover');
     const reply = comm.subcommands.find((cmd: any) => cmd.name === 'reply');
+    const apply = parsed.data.manifest.find((cmd: any) => cmd.name === 'apply');
+    const applyStatus = apply.subcommands.find((cmd: any) => cmd.name === 'status');
+    const projectDiscover = project.subcommands.find((cmd: any) => cmd.name === 'discover');
 
     expect(execute.options.some((opt: any) => opt.flags.includes('--idempotency-key'))).toBe(true);
     expect(operator.subcommands.some((cmd: any) => cmd.name === 'dashboard')).toBe(true);
@@ -713,6 +716,11 @@ prompts:
     expect(jobs.subcommands.some((cmd: any) => cmd.name === 'complete')).toBe(true);
     expect(jobsDiscover.options.some((opt: any) => opt.flags.includes('--freshness-days'))).toBe(true);
     expect(reply.options.some((opt: any) => opt.flags.includes('--thread'))).toBe(true);
+    expect(applyStatus.options.some((opt: any) => opt.flags.includes('--id'))).toBe(true);
+    expect(applyStatus.options.some((opt: any) => opt.flags.includes('--token'))).toBe(true);
+    expect(projectDiscover.options.some((opt: any) => opt.flags.includes('--tag'))).toBe(true);
+    expect(projectDiscover.options.some((opt: any) => opt.flags.includes('--mission-open'))).toBe(true);
+    expect(projectDiscover.options.some((opt: any) => opt.flags.includes('--limit'))).toBe(true);
   });
 
   it('comm commands are registered and fail locally with ERR_NO_AUTH when no token is configured', () => {

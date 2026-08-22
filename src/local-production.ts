@@ -9,6 +9,8 @@ import {
   validatePromptIndex,
 } from './ledger.js';
 
+const RETIRED_CLI_VERSIONS = ['3.4.0', '3.5.0'] as const;
+
 const PRODUCTION_PACK_FILES = [
   '.molthub/production/production-index.yml',
   '.molthub/production/current-state.yml',
@@ -215,8 +217,13 @@ export async function checkPipelineConformance(root = process.cwd()) {
           addLineFinding(errors, 'ERR_SECRET_IN_PRODUCTION_RECORD', `Production record contains secret-like content (${finding.pattern}).`, rel, lineNo);
         }
       }
-      if (/\b3\.4\.0\b/.test(line) && /molthub-cli|Local Bridge|CLI/i.test(line)) {
-        addLineFinding(errors, 'ERR_STALE_CLI_VERSION', 'CLI-facing copy still mentions 3.4.0.', rel, lineNo);
+      if (/\bin\s+\d+\.\d+\.\d+\b/i.test(line)) {
+        addLineFinding(errors, 'ERR_STALE_CLI_VERSION', 'CLI-facing copy pins a stale in X.Y.Z version.', rel, lineNo);
+      }
+      for (const retired of RETIRED_CLI_VERSIONS) {
+        if (new RegExp(`\\b${retired.replace(/\./g, '\\.')}\\b`).test(line) && /molthub-cli|Local Bridge|CLI|molthub/i.test(line)) {
+          addLineFinding(errors, 'ERR_STALE_CLI_VERSION', `CLI-facing copy still mentions retired ${retired}.`, rel, lineNo);
+        }
       }
       if (/\b(public beta is ready|ready for public beta|public beta ready)\b/i.test(line) && !isNegatedBoundaryLine(line)) {
         addLineFinding(errors, 'ERR_PUBLIC_BETA_OVERCLAIM', 'Copy claims public beta readiness.', rel, lineNo);

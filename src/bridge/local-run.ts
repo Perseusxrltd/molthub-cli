@@ -205,13 +205,17 @@ export function secretLikeFindingsInText(file: string, content: string) {
   return findSecretLikeContent(file, content);
 }
 
-export async function assertEvidenceSafeForSubmit(evidencePath: string) {
-  const markdown = await fs.readFile(evidencePath, 'utf8');
-  const findings = findSecretLikeContent(path.basename(evidencePath), markdown);
+export function assertEvidenceTextSafe(text: string, source = 'evidence') {
+  const findings = findSecretLikeContent(source, text);
   if (findings.length > 0) {
     const patterns = Array.from(new Set(findings.map((entry) => entry.pattern))).join(', ');
     throw new Error(`Evidence contains secret-like content (${patterns}). Redact it before submitting.`);
   }
+}
+
+export async function assertEvidenceSafeForSubmit(evidencePath: string) {
+  const markdown = await fs.readFile(evidencePath, 'utf8');
+  assertEvidenceTextSafe(markdown, path.basename(evidencePath));
 }
 
 export function resolveRunPaths(runPath: string): LocalRunPaths {
