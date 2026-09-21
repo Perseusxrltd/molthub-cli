@@ -2,6 +2,8 @@ import fs from 'fs-extra';
 import path from 'path';
 
 import { EVIDENCE_TEMPLATE } from './evidence.js';
+import { assertRunDestination, LocalBridgeError } from './safety.js';
+import { readGitHead } from './local-run.js';
 import type {
   BridgeAdapterMetadata,
   BridgeExecutorId,
@@ -13,6 +15,9 @@ import type {
 } from './types.js';
 
 export function defaultRunDirectory(missionId: string) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(missionId) || missionId.length > 200 || /[. ]$/.test(missionId) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(missionId)) {
+    throw new LocalBridgeError('ERR_UNSAFE_RUN_PATH', 'Mission ID is not a safe folder name. Provide an explicit --out folder.');
+  }
   return path.join('.molthub', 'runs', missionId);
 }
 
@@ -41,7 +46,27 @@ function cleanString(value: unknown) {
 }
 
 function normalizeExecutorId(value: BridgeExecutorId | undefined): BridgeExecutorId {
-  return value ?? 'manual';
+  const executorId = value ?? 'manual';
+  if (!['manual', 'codex-cli', 'hermes', 'openclaw', 'claude-code', 'gemini-cli'].includes(executorId)) {
+    throw new LocalBridgeError('ERR_INVALID_RUN_METADATA', 'Executor must be a supported local adapter.');
+  }
+  return executorId;
+}
+
+function assertEvidenceScalar(value: unknown, field: string): asserts value is string {
+  if (typeof value !== 'string' || !value || value !== value.trim() || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value)) {
+    throw new LocalBridgeError('ERR_INVALID_RUN_METADATA', `${field} must be a nonempty single-line value without control characters.`);
+  }
+}
+
+function preparedEvidenceTemplate(metadata: BridgeRunMetadata) {
+  assertEvidenceScalar(metadata.artifactId, 'Project ID');
+  assertEvidenceScalar(metadata.missionId, 'Mission ID');
+  if (metadata.packetChecksum !== null) assertEvidenceScalar(metadata.packetChecksum, 'Packet checksum');
+  return EVIDENCE_TEMPLATE
+    .replace(/^Mission:$/m, () => `Mission: ${metadata.missionId}`)
+    .replace(/^Packet checksum:$/m, () => metadata.packetChecksum === null ? 'Packet checksum:' : `Packet checksum: ${metadata.packetChecksum}`)
+    .replace(/^Executor used:$/m, () => `Executor used: ${metadata.executorId}`);
 }
 
 export function buildAdapterMetadata(input: {
@@ -158,7 +183,7 @@ function buildStatusMetadata(input: {
 
 export async function writeBridgeRunPackage(input: BridgeRunPackageInput): Promise<BridgeRunPackageFiles> {
   const outputDir = path.resolve(input.outputDir);
-  await fs.ensureDir(outputDir);
+  await assertRunDestination(outputDir);
 
   const packetMarkdownPath = path.join(outputDir, 'packet.md');
   const packetJsonPath = path.join(outputDir, 'packet.json');
@@ -195,7 +220,8 @@ export async function writeBridgeRunPackage(input: BridgeRunPackageInput): Promi
     packetChecksum: meta.checksum === null ? null : String(meta.checksum),
     packetVersion: meta.version,
     packetSource: meta.source === null ? null : String(meta.source),
-    worktreePath: input.worktreePath?.trim() || null,
+    worktreePath: path.resolve(input.worktreePath?.trim() || process.cwd()),
+    baseCommitSha: readGitHead(path.resolve(input.worktreePath?.trim() || process.cwd())) || null,
     executorId: adapter.executorId,
     orchestratorId: adapter.orchestratorId,
     adapterPath: path.relative(outputDir, adapterPath),
@@ -207,16 +233,19 @@ export async function writeBridgeRunPackage(input: BridgeRunPackageInput): Promi
       omittedSensitivePathCount: 0,
     },
   };
+  const evidenceTemplate = preparedEvidenceTemplate(metadata);
 
-  await fs.writeFile(packetMarkdownPath, input.packetMarkdown, 'utf8');
-  await fs.writeJson(packetJsonPath, input.packetJson, { spaces: 2 });
-  await fs.writeFile(evidenceTemplatePath, EVIDENCE_TEMPLATE, 'utf8');
-  await fs.writeJson(runMetadataPath, metadata, { spaces: 2 });
-  await fs.writeJson(adapterPath, adapter, { spaces: 2 });
-  await fs.writeJson(statusPath, status, { spaces: 2 });
-  await fs.writeFile(executorLogPath, 'No executor has been launched by MoltHub CLI.\n', 'utf8');
-  await fs.writeFile(commandsLogPath, 'No commands have been launched by MoltHub CLI.\n', 'utf8');
-  await fs.writeFile(diffSummaryPath, 'No diff collected yet. Run molthub mission evidence collect --run <path> after local work.\n', 'utf8');
+  // Exclusive writes also protect against a concurrent preparation of the same run.
+  await fs.ensureDir(outputDir);
+  await fs.writeFile(runMetadataPath, `${JSON.stringify(metadata, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  await fs.writeFile(packetMarkdownPath, input.packetMarkdown, { encoding: 'utf8', flag: 'wx' });
+  await fs.writeFile(packetJsonPath, `${JSON.stringify(input.packetJson, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  await fs.writeFile(evidenceTemplatePath, evidenceTemplate, { encoding: 'utf8', flag: 'wx' });
+  await fs.writeFile(adapterPath, `${JSON.stringify(adapter, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  await fs.writeFile(statusPath, `${JSON.stringify(status, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  await fs.writeFile(executorLogPath, 'No executor has been launched by MoltHub CLI.\n', { encoding: 'utf8', flag: 'wx' });
+  await fs.writeFile(commandsLogPath, 'No commands have been launched by MoltHub CLI.\n', { encoding: 'utf8', flag: 'wx' });
+  await fs.writeFile(diffSummaryPath, 'No diff collected yet. Run molthub mission evidence collect --run <path> after local work.\n', { encoding: 'utf8', flag: 'wx' });
 
   return {
     outputDir,

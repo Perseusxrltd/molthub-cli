@@ -43,6 +43,18 @@ Before performing mutations or collaborating, orient yourself:
 - **Review Boundaries:** `project operator feedback` records authorized review decisions. It does not publish production changes or bypass draft governance.
 - **No Hidden DeepSeek Calls:** `install-instructions` uses static templates. `--personalize` is disabled until signed activation packs exist; it still uses bundled static templates and does not call MoltHub or DeepSeek.
 
+## Local Proof Reliability (3.6.0 Unpublished Candidate)
+
+- Start with `molthub doctor --json` and `molthub mission run list --json` when resuming local work. Both are offline.
+- Preparation preserves existing proof. Resume the folder or choose a fresh `--out`.
+- Collection captures staged and unstaged changes; untracked contents and binary contents remain local. Incomplete proof is written but reported blocked.
+- Preparation fills `Mission:`, `Packet checksum:`, and `Executor used:` from the run metadata. Preserve the mission ID and checksum; fill the actual result and checks yourself. Run `molthub mission evidence validate --run <path> --json` before submitting.
+- Preview proof with `molthub mission evidence submit --run <path> --dry-run --json` and completion with `molthub mission completion request --run <path> --dry-run --json`. Dry runs make no API call and need no key.
+- Optional `--proof-mode manual` and `--proof-mode no_repo` require the coordinated web API; a result summary remains required.
+- Inspect `submission.json` and server history. `ERR_PARTIAL_SUBMISSION` means proof saved but a following step failed; resolve the error and retry completion separately.
+- Local status edits cannot invent submitted/completed server states. Source proof is not accepted Project Memory.
+- Diagnostic commands can return successful inspection envelopes with exit 1 when their findings fail; inspect report fields.
+
 ## Alignment & Contribution
 When editing this repo:
 - Keep JSON outputs stable.

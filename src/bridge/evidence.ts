@@ -49,7 +49,7 @@ function stripListMarker(value: string) {
 
 function splitChangedPaths(value: string) {
   return value
-    .split(/[\r\n,]+/)
+    .split(/^\s*[-*]\s+/m.test(value) ? /[\r\n]+/ : /[\r\n,]+/)
     .map(stripListMarker)
     .filter(Boolean);
 }
@@ -116,6 +116,7 @@ function cleanUrl(value: string) {
   try {
     const parsed = new URL(value.trim());
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (parsed.username || parsed.password) return null;
     parsed.hash = '';
     return parsed.toString().replace(/\/$/, '');
   } catch {
@@ -184,7 +185,7 @@ export function buildSourceEvidencePayload(fields: BridgeEvidenceFields): Source
 
   if (fields.commit) {
     if (isUrl(fields.commit)) {
-      payload.headCommitUrl = fields.commit;
+      payload.commitUrl = fields.commit;
     } else if (isLikelyCommitSha(fields.commit)) {
       payload.headCommitSha = fields.commit;
     }

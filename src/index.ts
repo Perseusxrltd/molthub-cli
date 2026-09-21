@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
-import { readFileSync } from 'fs';
+import { readFileSync, writeSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import axios from 'axios';
@@ -18,24 +18,23 @@ import {
 } from './activation-pack.js';
 import {
   completeMissionFromEvidence,
+  completionReceiptState,
   fetchMissionPacket,
   submitSourceEvidence,
 } from './bridge/api.js';
-import {
-  buildCompletionEvidence,
-  buildSourceEvidencePayload,
-  parseEvidenceTemplate,
-} from './bridge/evidence.js';
 import { defaultRunDirectory, writeBridgeRunPackage } from './bridge/files.js';
 import {
   coerceRunSubmitDefaults,
-  assertEvidenceSafeForSubmit,
   collectEvidence,
   readLocalRun,
   resolveRunPaths,
+  secretLikeFindingsInText,
   updateRunStatus,
 } from './bridge/local-run.js';
 import type { BridgeExecutorId, BridgeRunStatus } from './bridge/types.js';
+import { assertRunDestination, LocalBridgeError } from './bridge/safety.js';
+import { listLocalRuns, normalizeProofMode, saveCompletionReceipt, saveSubmissionReceipt, validateEvidence } from './bridge/validation.js';
+import { diagnoseLocalProject } from './diagnostics.js';
 import {
   checkPipelineConformance,
   exportProductionPack,
@@ -64,14 +63,14 @@ const LEGACY_PROJECT_PATH = path.join(process.cwd(), 'molthub.json');
 
 // Helper to determine if we are in JSON mode
 function isJsonMode() {
-  return program.opts().json === true;
+  return program.opts().json === true || process.argv.includes('--json');
 }
 
 // Structured output formatter
 function printOutput(success: boolean, data: any, message: string, errorDetails?: any, metaDetails?: Record<string, any>) {
   if (isJsonMode()) {
     if (success) {
-      console.log(JSON.stringify({ success: true, data, meta: { message, ...(metaDetails || {}) } }, null, 2));
+      writeSync(1, `${JSON.stringify({ success: true, data, meta: { message, ...(metaDetails || {}) } }, null, 2)}\n`);
     } else {
       const payload: any = {
         success: false, 
@@ -84,7 +83,7 @@ function printOutput(success: boolean, data: any, message: string, errorDetails?
       if (errorDetails?.suggestedNextCommands) {
         payload.suggestedNextCommands = errorDetails.suggestedNextCommands;
       }
-      console.log(JSON.stringify(payload, null, 2));
+      writeSync(1, `${JSON.stringify(payload, null, 2)}\n`);
     }
   } else {
     if (success) {
@@ -116,6 +115,8 @@ function normalizeErrorMessage(value: any, fallbackMessage: string): string {
 }
 
 function normalizeApiError(error: any, fallbackMessage: string) {
+  if (error instanceof LocalBridgeError) return { code: error.code, message: error.message, details: null };
+  if (!axios.isAxiosError(error)) return { code: 'ERR_LOCAL_OPERATION', message: normalizeErrorMessage(error?.message, fallbackMessage), details: null };
   if (error.code === 'ECONNABORTED') {
     return { code: "ERR_TIMEOUT", message: "Connection timed out", details: { code: error.code } };
   }
@@ -316,6 +317,19 @@ program
   .description('Repo-first operations for MoltHub projects, agents, governed actions, and bounded maintenance')
   .version(PKG_VERSION)
   .option('--json', 'Output JSON only (machine-readable mode)');
+
+program.configureOutput({ writeErr: (message) => { if (!isJsonMode()) process.stderr.write(message); } });
+program.exitOverride();
+
+program.command('doctor')
+  .description('Inspect local setup, repository, and proof readiness offline without API calls')
+  .option('--root <path>', 'Project directory to inspect', '.')
+  .action(async (opts) => {
+    const config = await loadConfig();
+    const result = await diagnoseLocalProject({ root: opts.root, version: PKG_VERSION, authSource: process.env.MOLTHUB_API_KEY ? 'env' : config.token ? 'config' : 'none' });
+    printOutput(true, result, result.ok ? 'Local setup checked' : 'Local setup needs attention');
+    if (!result.ok) process.exitCode = 1;
+  });
 
 // ==========================================
 // AGENT COMMANDS
@@ -1587,6 +1601,17 @@ missionPacketCmd.command('fetch')
 
 const missionRunCmd = missionCmd.command('run').description('Prepare local mission runs without executing tools');
 
+missionRunCmd.command('list')
+  .description('List local runs and proof readiness without contacting MoltHub')
+  .option('--root <path>', 'Runs directory', '.molthub/runs')
+  .option('-i, --id <id>', 'Filter by project ID')
+  .option('--status <status>', 'Filter by local status')
+  .action(async (opts) => {
+    const result = await listLocalRuns(opts.root, { projectId: opts.id, status: opts.status ? normalizeBridgeStatus(opts.status) : undefined });
+    printOutput(true, result, 'Listed local mission runs');
+    if (result.invalidRuns.length) process.exitCode = 1;
+  });
+
 missionRunCmd.command('prepare')
   .description('Fetch the packet and create local run files')
   .requiredOption('-i, --id <id>', 'Project ID')
@@ -1598,14 +1623,15 @@ missionRunCmd.command('prepare')
   .option('--plan-mode <mode>', 'Codex prompt mode for adapter templates: on or off. Defaults to on for codex-cli')
   .action(async (opts) => {
     await requireToken();
+    try {
     const outputDir = opts.out
       ? path.resolve(process.cwd(), opts.out)
       : path.resolve(process.cwd(), defaultRunDirectory(opts.missionId));
     const executorId = normalizeBridgeExecutor(opts.executor);
     const planMode = normalizePlanMode(opts.planMode);
-    const worktreePath = opts.worktree ? path.resolve(process.cwd(), opts.worktree) : null;
+    const worktreePath = path.resolve(process.cwd(), opts.worktree ?? '.');
 
-    try {
+      await assertRunDestination(outputDir);
       const headers = await getHeaders();
       const packetJson = await fetchMissionPacket({
         http: axios,
@@ -1676,12 +1702,20 @@ missionRunCmd.command('prepare')
 missionRunCmd.command('status')
   .description('Read or update local run status without contacting MoltHub')
   .requiredOption('--run <path>', 'Run folder path')
-  .option('--set <status>', 'Set local status: prepared, running, blocked, evidence_ready, submitted, completion_requested, completed, failed, cancelled')
+  .option('--set <status>', 'Set local status: prepared, running, blocked, evidence_ready, failed, cancelled; server statuses require receipts')
   .option('--blocked-reason <reason>', 'Blocked reason when setting status to blocked')
   .action(async (opts) => {
     try {
       let updatedStatus = null;
       if (opts.set) {
+        if (['submitted', 'completion_requested', 'completed'].includes(opts.set)) {
+          throw new LocalBridgeError('ERR_RECEIPT_REQUIRED', 'Submission and completion statuses require a server receipt. Use mission evidence submit or mission completion request.');
+        }
+        if (opts.set === 'evidence_ready') {
+          const local = await readLocalRun(opts.run);
+          const validation = await validateEvidence({ file: local.paths.evidencePath, run: local.run });
+          if (!validation.ok) throw new LocalBridgeError('ERR_INVALID_EVIDENCE', validation.errors.map((entry) => entry.message).join(' '));
+        }
         updatedStatus = await updateRunStatus(opts.run, normalizeBridgeStatus(opts.set), opts.blockedReason ?? null);
       }
       const localRun = await readLocalRun(opts.run);
@@ -1690,16 +1724,33 @@ missionRunCmd.command('status')
         run: localRun.run,
         adapter: localRun.adapter,
         status: updatedStatus ?? localRun.status,
+        receipts: localRun.receipts,
       }, opts.set ? 'Updated local mission run status' : 'Fetched local mission run status');
     } catch (error: any) {
       printOutput(false, null, error?.message || 'Failed to read local mission run status', {
-        code: 'ERR_LOCAL_RUN_STATUS',
+        code: error instanceof LocalBridgeError ? error.code : 'ERR_LOCAL_RUN_STATUS',
       });
       process.exit(1);
     }
   });
 
 const missionEvidenceCmd = missionCmd.command('evidence').description('Submit local bridge evidence');
+
+missionEvidenceCmd.command('validate')
+  .description('Check proof identity, summary, secrets, and API limits offline before submission')
+  .option('--run <path>', 'Run folder to validate evidence against')
+  .option('--file <path>', 'Evidence Markdown file (defaults to the run evidence.md)')
+  .option('-i, --id <id>', 'Expected project ID')
+  .option('-m, --mission-id <missionId>', 'Expected mission ID')
+  .option('--proof-mode <mode>', 'Proof context: repo, manual, or no_repo', 'repo')
+  .action(async (opts) => {
+    const local = opts.run ? await readLocalRun(opts.run) : null;
+    const file = opts.file ? path.resolve(opts.file) : local?.paths.evidencePath;
+    if (!file) throw new LocalBridgeError('ERR_MISSING_EVIDENCE_INPUT', 'Provide --run or --file.');
+    const result = await validateEvidence({ file, run: local?.run, artifactId: opts.id, missionId: opts.missionId, proofMode: opts.proofMode });
+    printOutput(true, result, result.ok ? 'Evidence is ready for submission' : 'Evidence needs attention');
+    if (!result.ok) process.exitCode = 1;
+  });
 
 missionEvidenceCmd.command('collect')
   .description('Collect local run proof into evidence.md without executing tools')
@@ -1736,14 +1787,21 @@ missionEvidenceCmd.command('submit')
   .option('--file <path>', 'Evidence Markdown file')
   .option('--run <path>', 'Run folder path; defaults id, mission id, and file from run.json/evidence.md')
   .option('--complete', 'Also submit mission completion after source evidence is saved')
+  .option('--proof-mode <mode>', 'Proof context: repo, manual, or no_repo')
+  .option('--dry-run', 'Validate and preview proof locally; make no API request')
   .action(async (opts) => {
-    await requireToken();
+    if (!opts.dryRun) await requireToken();
+    let savedSourceEvidence: unknown = null;
+    let savedCompletion: unknown = null;
+    let submissionReceipt: Awaited<ReturnType<typeof saveSubmissionReceipt>> | null = null;
     try {
       let runPath: string | null = null;
       let runDefaults: { artifactId: string; missionId: string } | null = null;
+      let runMetadata;
       if (opts.run) {
         const localRun = await readLocalRun(opts.run);
         runPath = localRun.paths.runDir;
+        runMetadata = localRun.run;
         runDefaults = coerceRunSubmitDefaults(localRun.run);
       }
       const artifactId = opts.id ?? runDefaults?.artifactId;
@@ -1759,11 +1817,17 @@ missionEvidenceCmd.command('submit')
         });
         process.exit(1);
       }
-      await assertEvidenceSafeForSubmit(evidencePath);
-      const markdown = await fs.readFile(evidencePath, 'utf8');
-      const fields = parseEvidenceTemplate(markdown);
-      const sourceEvidence = buildSourceEvidencePayload(fields);
-      const completionEvidence = buildCompletionEvidence(fields);
+      const validation = await validateEvidence({ file: evidencePath, run: runMetadata, artifactId, missionId, proofMode: opts.proofMode });
+      if (!validation.ok || !validation.payload) {
+        throw new LocalBridgeError(validation.errors[0]?.code ?? 'ERR_INVALID_EVIDENCE', validation.errors.map((entry) => entry.message).join(' '));
+      }
+      const sourceEvidence = validation.payload;
+      const completionEvidence = validation.completionEvidence!;
+      if (opts.complete && completionEvidence.length > 5000) throw new LocalBridgeError('ERR_EVIDENCE_LIMIT', 'Combined completion evidence must be at most 5000 characters. Shorten the proof before submitting with --complete.');
+      if (opts.dryRun) {
+        printOutput(true, { artifactId, missionId, runPath, dryRun: true, sourceEvidence, completionRequested: Boolean(opts.complete), evidenceHash: validation.evidenceHash, warnings: validation.warnings }, 'Validated evidence locally; no API request made');
+        return;
+      }
       const headers = await getHeaders();
       const sourceEvidenceResult = await submitSourceEvidence({
         http: axios,
@@ -1773,6 +1837,11 @@ missionEvidenceCmd.command('submit')
         headers,
         payload: sourceEvidence,
       });
+      savedSourceEvidence = sourceEvidenceResult;
+      if (runPath) {
+        submissionReceipt = await saveSubmissionReceipt(runPath, { artifactId, missionId, evidenceHash: validation.evidenceHash, sourceEvidence: sourceEvidenceResult });
+        await updateRunStatus(runPath, 'submitted');
+      }
       let completionResult = null;
       if (opts.complete) {
         completionResult = await completeMissionFromEvidence({
@@ -1782,11 +1851,13 @@ missionEvidenceCmd.command('submit')
           missionId,
           headers,
           evidence: completionEvidence,
-          sourceEvidence,
         });
+        savedCompletion = completionResult;
       }
-      if (runPath) {
-        await updateRunStatus(runPath, opts.complete ? 'completion_requested' : 'submitted');
+      const completionState = completionResult ? completionReceiptState(completionResult) : null;
+      if (runPath && completionState) {
+        await saveCompletionReceipt(runPath, { artifactId, missionId, state: completionState, response: completionResult });
+        await updateRunStatus(runPath, completionState);
       }
 
       printOutput(true, {
@@ -1794,10 +1865,17 @@ missionEvidenceCmd.command('submit')
         missionId,
         runPath,
         sourceEvidence: sourceEvidenceResult,
-        completed: Boolean(opts.complete),
+        completed: completionState === 'completed',
         completion: completionResult,
+        completionRequested: Boolean(opts.complete),
+        submissionReceipt,
       }, opts.complete ? 'Submitted source evidence and mission completion' : 'Submitted source evidence');
     } catch (e: any) {
+      if (savedSourceEvidence !== null) {
+        const error = normalizeApiError(e, 'Source evidence was saved, but the following step failed.');
+        printOutput(false, null, 'Source evidence was saved, but the following step failed. Inspect the receipt before retrying completion.', { code: 'ERR_PARTIAL_SUBMISSION', details: { sourceEvidenceSaved: true, sourceEvidence: savedSourceEvidence, submissionReceipt, completion: savedCompletion, nextStepError: error } });
+        process.exit(1);
+      }
       if (e?.message?.includes('Result summary')) {
         printOutput(false, null, e.message, { code: 'ERR_INVALID_EVIDENCE' });
         process.exit(1);
@@ -1819,18 +1897,24 @@ missionCompletionCmd.command('request')
   .option('--run <path>', 'Run folder path; defaults id, mission id, and evidence.md')
   .option('--file <path>', 'Evidence Markdown file')
   .option('--evidence <evidence>', 'Explicit completion evidence text')
+  .option('--proof-mode <mode>', 'Proof context for Markdown evidence: repo, manual, or no_repo')
+  .option('--dry-run', 'Validate and preview completion locally; make no API request')
   .action(async (opts) => {
-    await requireToken();
+    if (!opts.dryRun) await requireToken();
+    let savedCompletion: unknown = null;
     try {
       let runPath: string | null = null;
       let runDefaults: { artifactId: string; missionId: string } | null = null;
+      let runMetadata;
       if (opts.run) {
         const localRun = await readLocalRun(opts.run);
         runPath = localRun.paths.runDir;
+        runMetadata = localRun.run;
         runDefaults = coerceRunSubmitDefaults(localRun.run);
       }
       const artifactId = opts.id ?? runDefaults?.artifactId;
       const missionId = opts.missionId ?? runDefaults?.missionId;
+      if (runMetadata && ((artifactId !== runMetadata.artifactId) || (missionId !== runMetadata.missionId))) throw new LocalBridgeError('ERR_EVIDENCE_IDENTITY', 'Explicit project or mission ID does not match run.json.');
       if (!artifactId || !missionId) {
         printOutput(false, null, 'Provide --id and --mission-id, or provide --run <path>.', {
           code: 'ERR_MISSING_COMPLETION_INPUT',
@@ -1843,14 +1927,22 @@ missionCompletionCmd.command('request')
         : runPath
           ? resolveRunPaths(runPath).evidencePath
           : null;
-      let evidence = opts.evidence ?? '';
+      let evidence = (opts.evidence ?? '').trim();
       let sourceEvidence = undefined;
       if (!evidence && evidencePath) {
-        await assertEvidenceSafeForSubmit(evidencePath);
-        const markdown = await fs.readFile(evidencePath, 'utf8');
-        const fields = parseEvidenceTemplate(markdown);
-        evidence = buildCompletionEvidence(fields);
-        sourceEvidence = buildSourceEvidencePayload(fields);
+        const validation = await validateEvidence({ file: evidencePath, run: runMetadata, artifactId, missionId, proofMode: opts.proofMode });
+        if (!validation.ok || !validation.payload) throw new LocalBridgeError(validation.errors[0]?.code ?? 'ERR_INVALID_EVIDENCE', validation.errors.map((entry) => entry.message).join(' '));
+        evidence = validation.completionEvidence!;
+        sourceEvidence = validation.payload;
+      }
+
+      if (secretLikeFindingsInText('completion', evidence).length) throw new LocalBridgeError('ERR_SECRET_IN_EVIDENCE', 'Completion evidence contains secret-like content. Redact it before submitting.');
+      if (!evidence.trim()) throw new LocalBridgeError('ERR_MISSING_COMPLETION_EVIDENCE', 'Completion evidence is required. Provide --evidence, --file, or --run.');
+      if (evidence.length > 5000) throw new LocalBridgeError('ERR_EVIDENCE_LIMIT', 'Completion evidence must be at most 5000 characters.');
+      normalizeProofMode(opts.proofMode);
+      if (opts.dryRun) {
+        printOutput(true, { artifactId, missionId, runPath, evidence, sourceEvidence, dryRun: true }, 'Validated completion locally; no API request made');
+        return;
       }
       if (!evidence) {
         printOutput(false, null, 'Completion evidence is required. Provide --evidence, --file, or --run.', {
@@ -1868,8 +1960,11 @@ missionCompletionCmd.command('request')
         evidence,
         sourceEvidence,
       });
+      savedCompletion = completionResult;
+      const state = completionReceiptState(completionResult);
       if (runPath) {
-        await updateRunStatus(runPath, 'completion_requested');
+        await saveCompletionReceipt(runPath, { artifactId, missionId, state, response: completionResult });
+        await updateRunStatus(runPath, state);
       }
 
       printOutput(true, {
@@ -1877,8 +1972,14 @@ missionCompletionCmd.command('request')
         missionId,
         runPath,
         completion: completionResult,
+        completed: state === 'completed',
+        completionRequested: true,
       }, 'Mission completion requested');
     } catch (e: any) {
+      if (savedCompletion !== null) {
+        printOutput(false, null, 'The server accepted completion, but the local receipt could not be saved. Check server history before retrying.', { code: 'ERR_PARTIAL_COMPLETION', details: { completion: savedCompletion, localError: normalizeApiError(e, 'Local receipt failed') } });
+        process.exit(1);
+      }
       if (e?.message?.includes('Result summary')) {
         printOutput(false, null, e.message, { code: 'ERR_INVALID_EVIDENCE' });
         process.exit(1);
@@ -2057,26 +2158,6 @@ syncCmd.command('trigger')
     } catch (e) {
       handleApiError(e, "Failed to trigger sync");
     }
-  });
-
-// ==========================================
-// DOCTOR COMMANDS
-// ==========================================
-program.command('doctor')
-  .description('Diagnose configuration and operating state')
-  .action(async () => {
-    const report: any = { checks: {} };
-    let hasErrors = false;
-
-    const token = await getToken();
-    report.checks.auth = token ? "OK" : "MISSING";
-    if (!token) hasErrors = true;
-
-    const hasLocal = await fs.pathExists(LOCAL_PROJECT_PATH);
-    report.checks.local_manifest = hasLocal ? "FOUND" : "MISSING";
-
-    printOutput(!hasErrors, report, hasErrors ? "Doctor found issues" : "All systems normal");
-    if (hasErrors) process.exit(1);
   });
 
 // ==========================================
@@ -2433,5 +2514,15 @@ agentHandoffCmd.command('update')
     }
   });
 
-program.parse(process.argv);
+program.parseAsync(process.argv).catch((error: any) => {
+  if (error.code === 'commander.helpDisplayed' || error.code === 'commander.version' || error.exitCode === 0) return;
+  if (isJsonMode()) {
+    // Commander can echo user-supplied values. Keep parse errors free of credentials.
+    const isParseError = typeof error.code === 'string' && error.code.startsWith('commander.');
+    printOutput(false, null, isParseError ? 'Invalid command arguments. Use molthub commands --json or command --help.' : error instanceof LocalBridgeError ? error.message : 'The local command could not complete. Check the input files and permissions.', { code: isParseError ? 'ERR_USAGE' : error instanceof LocalBridgeError ? error.code : 'ERR_LOCAL_OPERATION', details: null });
+  } else if (!(typeof error.code === 'string' && error.code.startsWith('commander.'))) {
+    console.error(error instanceof LocalBridgeError ? error.message : 'The local command could not complete. Check the input files and permissions.');
+  }
+  process.exitCode = 1;
+});
 

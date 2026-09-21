@@ -3,8 +3,8 @@ import { execSync } from 'child_process';
 import fs from 'fs-extra';
 import path from 'path';
 
-const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
-const CLI_PATH = `node --import "data:text/javascript,import{register}from'node:module';import{pathToFileURL}from'node:url';register('ts-node/esm',pathToFileURL('./'));" "${CLI_ABS_PATH}"`;
+const CLI_ABS_PATH = path.join(process.cwd(), 'dist', 'index.js');
+const CLI_PATH = `"${process.execPath}" "${CLI_ABS_PATH}"`;
 const EXEC_TIMEOUT = 15000;
 
 function parseCommand(command: string, cwd: string) {

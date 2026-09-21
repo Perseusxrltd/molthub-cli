@@ -34,10 +34,11 @@ export type BridgeEvidenceFields = {
 };
 
 export type SourceEvidencePayload = {
+  proofMode?: 'repo' | 'manual' | 'no_repo';
   branchName?: string;
   workBranch?: string;
   headCommitSha?: string;
-  headCommitUrl?: string;
+  commitUrl?: string;
   pullRequestUrl?: string;
   changedPaths?: string[];
   evidenceSummary: string;
@@ -58,6 +59,7 @@ export type BridgeRunMetadata = {
   packetVersion: string | number | null;
   packetSource: string | null;
   worktreePath: string | null;
+  baseCommitSha?: string | null;
   executorId: BridgeExecutorId;
   orchestratorId: string | null;
   adapterPath: string;

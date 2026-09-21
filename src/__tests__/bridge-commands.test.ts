@@ -4,8 +4,8 @@ import fs from 'fs-extra';
 import net from 'net';
 import path from 'path';
 
-const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
-const CLI_PATH = `node --import "data:text/javascript,import{register}from'node:module';import{pathToFileURL}from'node:url';register('ts-node/esm',pathToFileURL('./'));" "${CLI_ABS_PATH}"`;
+const CLI_ABS_PATH = path.join(process.cwd(), 'dist', 'index.js');
+const CLI_PATH = `"${process.execPath}" "${CLI_ABS_PATH}"`;
 const EXEC_TIMEOUT = 15000;
 
 function testEnv(testDir: string, extra: Record<string, string> = {}) {
@@ -211,7 +211,7 @@ describe('Local Executor Bridge CLI commands', () => {
             return reply(res, { markdown: '# Collect Mission\\n\\nRun this outside MoltHub.' });
           }
           if (req.method === 'PUT' && req.url === '/api/v1/artifacts/artifact-1/missions/mission-collect/source-evidence') {
-            return reply(res, { sourceEvidence: { id: 'evidence-collect' } });
+            return reply(res, { success: true, sourceEvidence: { id: 'evidence-collect' } });
           }
           reply(res, { error: { code: 'ERR_NOT_FOUND', message: 'Not found' } }, 404);
         });
@@ -545,7 +545,7 @@ Memory update notes:
     const evidencePath = path.join(testDir, 'evidence.md');
     fs.writeFileSync(evidencePath, `# MoltHub Mission Evidence
 
-Mission: Bridge Mission
+Mission: mission-1
 Packet checksum: checksum-123
 Executor used: Codex CLI manually
 Branch: local-bridge-v0
@@ -577,10 +577,10 @@ Memory update notes: Keep manual bridge boundary.
             body: body ? JSON.parse(body) : null
           }) + '\\n');
           if (req.method === 'PUT' && req.url === '/api/v1/artifacts/artifact-1/missions/mission-1/source-evidence') {
-            return reply(res, { sourceEvidence: { id: 'evidence-1' } });
+            return reply(res, { success: true, sourceEvidence: { id: 'evidence-1' } });
           }
           if (req.method === 'POST' && req.url === '/api/v1/artifacts/artifact-1/missions/mission-1/complete') {
-            return reply(res, { data: { mission: { status: 'completed' } } });
+            return reply(res, { success: true, data: { mission: { status: 'completed' } } });
           }
           reply(res, { error: { code: 'ERR_NOT_FOUND', message: 'Not found' } }, 404);
         });

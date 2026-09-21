@@ -71,7 +71,7 @@ Memory update notes:
 `);
 
     expect(buildSourceEvidencePayload(fields)).toMatchObject({
-      headCommitUrl: 'https://github.com/example/repo/commit/abcdef1234567890',
+      commitUrl: 'https://github.com/example/repo/commit/abcdef1234567890',
       changedPaths: ['src/bridge/evidence.ts', 'src/index.ts'],
     });
   });

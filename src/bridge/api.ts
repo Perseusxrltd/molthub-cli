@@ -1,4 +1,12 @@
 import type { BridgeHttpClient, PacketFormat, SourceEvidencePayload } from './types.js';
+import { LocalBridgeError } from './safety.js';
+
+export function completionReceiptState(value: unknown): 'completed' | 'completion_requested' {
+  const body = value as any;
+  if (body?.success === true && body.data?.mission?.status === 'completed') return 'completed';
+  if (body?.success === true && typeof body.data?.completionDraft?.id === 'string' && body.data.completionDraft.id.trim()) return 'completion_requested';
+  throw new LocalBridgeError('ERR_INVALID_API_RECEIPT', 'The server did not return a mission completion or review-draft receipt. Check server history before retrying.');
+}
 
 function encodePathSegment(value: string) {
   return encodeURIComponent(value);
@@ -31,6 +39,10 @@ export async function submitSourceEvidence(input: {
 }) {
   const url = `${missionBase(input.baseUrl, input.artifactId, input.missionId)}/source-evidence`;
   const response = await input.http.put(url, input.payload, { headers: input.headers });
+  const body = response.data as any;
+  if (body?.success !== true || typeof body.sourceEvidence?.id !== 'string' || !body.sourceEvidence.id.trim()) {
+    throw new LocalBridgeError('ERR_INVALID_API_RECEIPT', 'The server did not return a saved source-evidence receipt. Check server history before retrying.');
+  }
   return response.data;
 }
 
@@ -48,5 +60,6 @@ export async function completeMissionFromEvidence(input: {
     ? { evidence: input.evidence, sourceEvidence: input.sourceEvidence }
     : { evidence: input.evidence };
   const response = await input.http.post(url, body, { headers: input.headers });
+  completionReceiptState(response.data);
   return response.data;
 }

@@ -3,9 +3,9 @@ import { execSync, spawn, type ChildProcessWithoutNullStreams } from 'child_proc
 import fs from 'fs-extra';
 import path from 'path';
 
-const CLI_ABS_PATH = path.join(process.cwd(), 'src', 'index.ts');
-// --import is the modern (non-deprecated) API; ts-node/esm --loader generates warnings on Node 22+
-const CLI_PATH = `node --import "data:text/javascript,import{register}from'node:module';import{pathToFileURL}from'node:url';register('ts-node/esm',pathToFileURL('./'));" "${CLI_ABS_PATH}"`;
+// npm test builds the same executable distributed in the package.
+const CLI_ABS_PATH = path.join(process.cwd(), 'dist', 'index.js');
+const CLI_PATH = `"${process.execPath}" "${CLI_ABS_PATH}"`;
 const EXEC_TIMEOUT = 15000;
 
 function emptyAuthEnv(testDir: string, extra: Record<string, string> = {}) {
@@ -151,7 +151,7 @@ tasks: ["task1"]
     const parsed = JSON.parse(output);
 
     expect(parsed.success).toBe(true);
-    expect(parsed.data.version).toBe('3.5.1');
+    expect(parsed.data.version).toBe('3.6.0');
     expect(parsed.data.safeDecisionLoop).toContain('molthub agent bootstrap --json');
     expect(parsed.data.repoOnboardingLoop).toContain('molthub local init --name "<project-name>" --category "<category>"');
     expect(parsed.data.repoOnboardingLoop).toContain('molthub local validate --json');
@@ -438,14 +438,15 @@ tasks: ["task1"]
     expect(content).toContain('idempotency');
   });
 
-  it('release docs are updated to 3.5.1', () => {
+  it('candidate docs are updated to 3.6.0 without claiming publication', () => {
     const skillPath = path.join(process.cwd(), 'SKILL.md');
     const readmePath = path.join(process.cwd(), 'README.md');
     const projectPath = path.join(process.cwd(), '.molthub', 'project.md');
 
-    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.5.1');
-    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.5.1)');
-    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.5.1"');
+    expect(fs.readFileSync(skillPath, 'utf8')).toContain('3.6.0');
+    expect(fs.readFileSync(readmePath, 'utf8')).toContain('MoltHub CLI (v3.6.0)');
+    expect(fs.readFileSync(readmePath, 'utf8')).toContain('unpublished');
+    expect(fs.readFileSync(projectPath, 'utf8')).toContain('version: "3.6.0"');
   });
 
   it('README exposes a parseable Active Project command reference table', () => {

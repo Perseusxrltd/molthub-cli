@@ -3,7 +3,7 @@ import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
 
-import { EVIDENCE_TEMPLATE } from '../evidence.js';
+import { parseEvidenceTemplate } from '../evidence.js';
 import { defaultRunDirectory, writeBridgeRunPackage } from '../files.js';
 
 describe('local bridge run package files', () => {
@@ -18,6 +18,8 @@ describe('local bridge run package files', () => {
     const written = await writeBridgeRunPackage({
       artifactId: 'artifact-1',
       missionId: 'mission-1',
+      executorId: 'claude-code',
+      runnerVersion: '3.6.0',
       outputDir,
       packetJson: {
         id: 'packet-1',
@@ -33,7 +35,19 @@ describe('local bridge run package files', () => {
     expect(await fs.pathExists(written.evidenceTemplatePath)).toBe(true);
     expect(await fs.pathExists(written.runMetadataPath)).toBe(true);
     expect(await fs.readFile(written.packetMarkdownPath, 'utf8')).toContain('Run this manually.');
-    expect(await fs.readFile(written.evidenceTemplatePath, 'utf8')).toBe(EVIDENCE_TEMPLATE);
+    expect(parseEvidenceTemplate(await fs.readFile(written.evidenceTemplatePath, 'utf8'))).toEqual({
+      mission: 'mission-1',
+      packetChecksum: 'checksum-123',
+      executorUsed: 'claude-code',
+      branch: '',
+      commit: '',
+      prUrl: '',
+      changedPaths: [],
+      testsRun: '',
+      resultSummary: '',
+      issuesBlockers: '',
+      memoryUpdateNotes: '',
+    });
 
     const metadata = await fs.readJson(written.runMetadataPath);
     expect(metadata).toMatchObject({

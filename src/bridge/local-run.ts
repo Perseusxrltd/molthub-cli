@@ -1,6 +1,7 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs-extra';
 import path from 'path';
+import { assertPlainPath, readProofJson, readProofText, LocalBridgeError } from './safety.js';
 
 import {
   buildCompletionEvidence,
@@ -22,6 +23,9 @@ export const SECRET_PATTERNS = [
   { name: 'github_token', pattern: /gh[pousr]_[A-Za-z0-9_]{20,}/g },
   { name: 'slack_token', pattern: /xox[baprs]-[A-Za-z0-9\-]+/g },
   { name: 'private_key', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  { name: 'database_url', pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s"']+/gi },
+  { name: 'aws_access_key', pattern: /\bAKIA[0-9A-Z]{16}\b/g },
+  { name: 'generic_secret_assignment', pattern: /\b(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[A-Za-z0-9_\-.]{20,}/gi },
 ];
 
 const SENSITIVE_PATH_PATTERNS = [
@@ -42,6 +46,8 @@ export type LocalRunPaths = {
   commandsLogPath: string;
   diffSummaryPath: string;
   diffPatchPath: string;
+  submissionReceiptPath: string;
+  completionReceiptPath: string;
 };
 
 export type EvidenceCollectOptions = {
@@ -73,7 +79,7 @@ function safeGitArgs(args: string[]) {
   ];
 }
 
-function runGit(cwd: string, args: string[]) {
+function runGit(cwd: string, args: string[], optional = false) {
   try {
     return execFileSync('git', safeGitArgs(args), {
       cwd,
@@ -88,22 +94,63 @@ function runGit(cwd: string, args: string[]) {
         GIT_PAGER: 'cat',
         GIT_TERMINAL_PROMPT: '0',
       },
-    }).replace(/\s+$/, '');
+    });
   } catch {
-    return '';
+    if (optional) return '';
+    throw new LocalBridgeError('ERR_GIT_INSPECTION', 'Could not inspect the recorded worktree with git. Check that the folder exists, git is installed, and this repository is accessible. No clean-worktree claim was recorded.');
   }
 }
 
-function parseChangedPaths(statusOutput: string) {
-  const paths = new Set<string>();
-  for (const line of statusOutput.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    const rawPath = line.length > 3 ? line.slice(3).trim() : line.trim().replace(/^[A-Z?! ]+/, '').trim();
-    if (!rawPath) continue;
-    const renameParts = rawPath.split(/\s+->\s+/);
-    paths.add(renameParts[renameParts.length - 1]);
+export function readGitHead(cwd: string) {
+  return runGit(cwd, ['rev-parse', '--verify', 'HEAD'], true).trim();
+}
+
+export function inspectGitWorktree(cwd: string, baseCommitSha?: string | null) {
+  const root = runGit(cwd, ['rev-parse', '--show-toplevel']).trim();
+  const status = runGit(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  const records = status.split('\0');
+  const changedPaths = new Set<string>();
+  let omittedSensitivePathCount = 0;
+  let untrackedCount = 0;
+  const addPaths = (names: string[]) => {
+    if (names.some((name) => !name || isSensitivePath(name) || /[\r\n\x00-\x1f]/.test(name))) {
+      omittedSensitivePathCount += 1;
+      return false;
+    }
+    for (const name of names) changedPaths.add(name);
+    return true;
+  };
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (!record) continue;
+    const flags = record.slice(0, 2);
+    const names = [record.slice(3)];
+    if (/[RC]/.test(flags)) names.push(records[++index]);
+    if (addPaths(names) && flags === '??') untrackedCount += 1;
   }
-  return Array.from(paths);
+  const validBase = baseCommitSha && /^[a-f0-9]{7,64}$/i.test(baseCommitSha)
+    && runGit(root, ['rev-parse', '--verify', `${baseCommitSha}^{commit}`], true).trim() ? baseCommitSha : null;
+  const commit = readGitHead(root);
+  if (validBase && commit) {
+    const committed = runGit(root, ['diff', '--no-ext-diff', '--no-textconv', '--name-status', '-z', '--find-renames', validBase, commit, '--']).split('\0');
+    for (let index = 0; index < committed.length; index += 1) {
+      const status = committed[index];
+      if (!status) continue;
+      const names = [committed[++index]];
+      if (/^[RC]/.test(status)) names.push(committed[++index]);
+      addPaths(names);
+    }
+  }
+  return {
+    root,
+    branch: runGit(root, ['branch', '--show-current'], true).trim(),
+    commit,
+    baseCommitSha: validBase,
+    committedChangesIncluded: Boolean(validBase && commit),
+    changedPaths: [...changedPaths],
+    omittedSensitivePathCount,
+    untrackedCount,
+  };
 }
 
 function normalizeRepoPath(value: string) {
@@ -113,19 +160,6 @@ function normalizeRepoPath(value: string) {
 function isSensitivePath(value: string) {
   const normalized = normalizeRepoPath(value);
   return SENSITIVE_PATH_PATTERNS.some((entry) => entry.pattern.test(normalized));
-}
-
-function partitionChangedPaths(paths: string[]) {
-  const safe: string[] = [];
-  let omittedSensitivePathCount = 0;
-  for (const entry of paths) {
-    if (isSensitivePath(entry)) {
-      omittedSensitivePathCount += 1;
-    } else {
-      safe.push(entry);
-    }
-  }
-  return { safe, omittedSensitivePathCount };
 }
 
 function renderEvidence(fields: BridgeEvidenceFields) {
@@ -157,7 +191,7 @@ function mergeEvidenceFields(existing: BridgeEvidenceFields, next: Partial<Bridg
     branch: next.branch || existing.branch,
     commit: next.commit || existing.commit,
     prUrl: next.prUrl || existing.prUrl,
-    changedPaths: next.changedPaths && next.changedPaths.length > 0 ? next.changedPaths : existing.changedPaths,
+    changedPaths: next.changedPaths ?? existing.changedPaths,
     testsRun: next.testsRun || existing.testsRun,
     resultSummary: next.resultSummary || existing.resultSummary,
     issuesBlockers: next.issuesBlockers || existing.issuesBlockers,
@@ -206,11 +240,11 @@ export function secretLikeFindingsInText(file: string, content: string) {
 }
 
 export async function assertEvidenceSafeForSubmit(evidencePath: string) {
-  const markdown = await fs.readFile(evidencePath, 'utf8');
+  const markdown = await readProofText(evidencePath);
   const findings = findSecretLikeContent(path.basename(evidencePath), markdown);
   if (findings.length > 0) {
     const patterns = Array.from(new Set(findings.map((entry) => entry.pattern))).join(', ');
-    throw new Error(`Evidence contains secret-like content (${patterns}). Redact it before submitting.`);
+    throw new LocalBridgeError('ERR_SECRET_IN_EVIDENCE', `Evidence contains secret-like content (${patterns}). Redact it before submitting.`);
   }
 }
 
@@ -226,28 +260,56 @@ export function resolveRunPaths(runPath: string): LocalRunPaths {
     commandsLogPath: path.join(runDir, 'commands.log'),
     diffSummaryPath: path.join(runDir, 'diff-summary.txt'),
     diffPatchPath: path.join(runDir, 'diff.patch'),
+    submissionReceiptPath: path.join(runDir, 'submission.json'),
+    completionReceiptPath: path.join(runDir, 'completion.json'),
   };
 }
 
 export async function readLocalRun(runPath: string) {
   const paths = resolveRunPaths(runPath);
+  for (const file of Object.values(paths)) await assertPlainPath(file);
   if (!(await fs.pathExists(paths.runMetadataPath))) {
     throw new Error(`Missing run.json in ${paths.runDir}`);
   }
-  const run = await fs.readJson(paths.runMetadataPath) as BridgeRunMetadata;
+  const run = await readProofJson(paths.runMetadataPath) as BridgeRunMetadata;
+  if (!run || run.version !== 'local_executor_bridge_v0' || !cleanString(run.artifactId) || !cleanString(run.missionId)
+    || (run.projectId && run.projectId !== run.artifactId) || !LOCAL_RUN_STATUSES.includes(run.status)) {
+    throw new LocalBridgeError('ERR_INVALID_LOCAL_RUN', 'run.json must contain a supported version, matching project identity, mission ID, and valid local status.');
+  }
+  if (findSecretLikeContent('run.json', JSON.stringify(run)).length) {
+    throw new LocalBridgeError('ERR_SECRET_IN_EVIDENCE', 'Run metadata contains secret-like content. Redact it before using the run.');
+  }
   const adapter = await fs.pathExists(paths.adapterPath)
-    ? await fs.readJson(paths.adapterPath) as BridgeAdapterMetadata
+    ? await readProofJson(paths.adapterPath) as BridgeAdapterMetadata
     : null;
   const status = await fs.pathExists(paths.statusPath)
-    ? await fs.readJson(paths.statusPath) as BridgeStatusMetadata
+    ? await readProofJson(paths.statusPath) as BridgeStatusMetadata
     : null;
-  return { paths, run, adapter, status };
+  if (status && (status.artifactId !== run.artifactId || status.missionId !== run.missionId || !LOCAL_RUN_STATUSES.includes(status.status))) {
+    throw new LocalBridgeError('ERR_INVALID_LOCAL_RUN', 'status.json does not match the local run identity or contains an invalid status.');
+  }
+  if (findSecretLikeContent('adapter.json', JSON.stringify(adapter)).length || findSecretLikeContent('status.json', JSON.stringify(status)).length) {
+    throw new LocalBridgeError('ERR_SECRET_IN_EVIDENCE', 'Run metadata contains secret-like content. Redact it before using the run.');
+  }
+  const receipts: Record<string, unknown> = {};
+  for (const [key, file] of [['submission', paths.submissionReceiptPath], ['completion', paths.completionReceiptPath]]) {
+    if (!(await fs.pathExists(file))) continue;
+    const value = await readProofJson(file);
+    if (secretLikeFindingsInText(path.basename(file), JSON.stringify(value)).length) throw new LocalBridgeError('ERR_SECRET_IN_EVIDENCE', 'Local receipt contains secret-like content. Redact it before reading the run.');
+    receipts[key] = value;
+  }
+  return { paths, run, adapter, status, receipts };
 }
 
+export const LOCAL_RUN_STATUSES: BridgeRunStatus[] = ['prepared', 'running', 'blocked', 'evidence_ready', 'submitted', 'completion_requested', 'completed', 'failed', 'cancelled'];
+
 export async function updateRunStatus(runPath: string, status: BridgeRunStatus, blockedReason?: string | null) {
+  if (blockedReason && findSecretLikeContent('blockedReason', blockedReason).length) {
+    throw new LocalBridgeError('ERR_SECRET_IN_EVIDENCE', 'Blocked reason contains secret-like content. Redact it before saving.');
+  }
   const { paths, run } = await readLocalRun(runPath);
   const existingStatus = await fs.pathExists(paths.statusPath)
-    ? await fs.readJson(paths.statusPath) as BridgeStatusMetadata
+    ? await readProofJson(paths.statusPath) as BridgeStatusMetadata
     : {
         version: 'local_run_status_v1',
         projectId: run.projectId ?? run.artifactId,
@@ -283,14 +345,14 @@ export async function collectEvidence(runPath: string, options: EvidenceCollectO
   }
 
   const worktreePath = cleanString(run.worktreePath) || process.cwd();
-  const statusOutput = runGit(worktreePath, ['status', '--short']);
-  const branch = runGit(worktreePath, ['branch', '--show-current']);
-  const commit = runGit(worktreePath, ['rev-parse', '--verify', 'HEAD']);
-  const allChangedPaths = parseChangedPaths(statusOutput);
-  const { safe: changedPaths, omittedSensitivePathCount } = partitionChangedPaths(allChangedPaths);
-  const diffStat = changedPaths.length > 0
-    ? runGit(worktreePath, ['diff', '--no-ext-diff', '--no-textconv', '--stat', '--', ...changedPaths])
-    : '';
+  const git = inspectGitWorktree(worktreePath, run.baseCommitSha);
+  const { branch, commit, changedPaths, omittedSensitivePathCount } = git;
+  const diffArgs = ['diff', '--no-ext-diff', '--no-textconv'];
+  // Literal pathspecs prevent a filename such as :(glob)** from expanding scope.
+  const pathspecs = changedPaths.map((file) => `:(literal)${file}`);
+  const stagedStat = changedPaths.length ? runGit(git.root, [...diffArgs, '--cached', '--stat', '--', ...pathspecs]).trim() : '';
+  const unstagedStat = changedPaths.length ? runGit(git.root, [...diffArgs, '--stat', '--', ...pathspecs]).trim() : '';
+  const committedStat = changedPaths.length && git.committedChangesIncluded ? runGit(git.root, [...diffArgs, '--stat', git.baseCommitSha!, git.commit, '--', ...pathspecs]).trim() : '';
   const diffSummary = [
     `Collected at: ${new Date().toISOString()}`,
     `Worktree: ${worktreePath}`,
@@ -301,19 +363,27 @@ export async function collectEvidence(runPath: string, options: EvidenceCollectO
     changedPaths.length > 0 ? changedPaths.map((entry) => `- ${entry}`).join('\n') : '- none detected',
     omittedSensitivePathCount > 0 ? `- [${omittedSensitivePathCount} sensitive path omitted]` : null,
     '',
-    'Git diff stat:',
-    diffStat || 'No git diff stat available.',
+    'Committed changes since preparation:',
+    git.committedChangesIncluded ? committedStat || 'No committed changes since preparation.' : 'Unavailable: no resolvable preparation commit was recorded. Only current uncommitted changes were inspected.',
+    'Staged diff stat:',
+    stagedStat || 'No staged diff.',
+    'Unstaged diff stat:',
+    unstagedStat || 'No unstaged diff.',
+    `Untracked files: ${git.untrackedCount} (paths only; contents are not captured).`,
   ].filter((line) => line !== null).join('\n');
-  await fs.writeFile(paths.diffSummaryPath, `${diffSummary}\n`, 'utf8');
+  await fs.writeFile(paths.diffSummaryPath, `${redactSecretLikeContent(diffSummary)}\n`, 'utf8');
 
   let patchWritten = false;
-  if (options.includePatch && changedPaths.length > 0) {
-    const patch = runGit(worktreePath, ['diff', '--no-ext-diff', '--no-textconv', '--binary', '--', ...changedPaths]);
+  if (options.includePatch) {
+    const stagedPatch = changedPaths.length ? runGit(git.root, [...diffArgs, '--cached', '--', ...pathspecs]) : '';
+    const unstagedPatch = changedPaths.length ? runGit(git.root, [...diffArgs, '--', ...pathspecs]) : '';
+    const committedPatch = changedPaths.length && git.committedChangesIncluded ? runGit(git.root, [...diffArgs, git.baseCommitSha!, git.commit, '--', ...pathspecs]) : '';
+    const patch = `# Committed changes since preparation\n${committedPatch}\n# Staged changes\n${stagedPatch}\n# Unstaged changes\n${unstagedPatch}`;
     await fs.writeFile(paths.diffPatchPath, `${redactSecretLikeContent(patch)}\n`, 'utf8');
     patchWritten = true;
   }
 
-  const existingMarkdown = await fs.readFile(paths.evidencePath, 'utf8');
+  const existingMarkdown = await readProofText(paths.evidencePath);
   const existingFields = parseEvidenceTemplate(existingMarkdown);
   const nextFields = redactEvidenceFields(mergeEvidenceFields(existingFields, {
     mission: run.missionId,
@@ -339,13 +409,17 @@ export async function collectEvidence(runPath: string, options: EvidenceCollectO
   const secretLikeFindings: Array<{ file: string; pattern: string }> = [];
   for (const file of checkedFiles) {
     if (!(await fs.pathExists(file))) continue;
-    const content = await fs.readFile(file, 'utf8');
+    const content = await readProofText(file, 16 * 1024 * 1024);
     secretLikeFindings.push(...findSecretLikeContent(path.relative(paths.runDir, file), content));
   }
 
+  const { validateEvidence } = await import('./validation.js');
+  const validation = await validateEvidence({ file: paths.evidencePath, run });
+  const evidenceReady = validation.ok && secretLikeFindings.length === 0;
+  const nextStatus = evidenceReady ? 'evidence_ready' : 'blocked';
   const nextRun: BridgeRunMetadata = {
     ...run,
-    status: 'evidence_ready',
+    status: nextStatus,
     redactionSummary: {
       checkedFiles: checkedFiles.map((file) => path.relative(paths.runDir, file)),
       secretLikeFindings,
@@ -357,13 +431,16 @@ export async function collectEvidence(runPath: string, options: EvidenceCollectO
     },
   };
   await fs.writeJson(paths.runMetadataPath, nextRun, { spaces: 2 });
-  await updateRunStatus(paths.runDir, 'evidence_ready');
+  await updateRunStatus(paths.runDir, nextStatus, evidenceReady ? null : 'Proof needs a result summary and local secret review before submission.');
 
   return {
     runDir: paths.runDir,
     artifactId: run.artifactId,
     missionId: run.missionId,
-    status: 'evidence_ready' as const,
+    status: nextStatus,
+    readyToSubmit: evidenceReady,
+    validation: { errors: validation.errors, warnings: validation.warnings },
+    git: { inspected: true, baseCommitSha: git.baseCommitSha, committedChangesIncluded: git.committedChangesIncluded, untrackedCount: git.untrackedCount, patchIncludes: [...(git.committedChangesIncluded ? ['committed_since_preparation'] : []), 'staged', 'unstaged'], untrackedContentsIncluded: false },
     files: {
       evidence: paths.evidencePath,
       diffSummary: paths.diffSummaryPath,
@@ -377,6 +454,9 @@ export async function collectEvidence(runPath: string, options: EvidenceCollectO
     completionEvidencePreview: buildCompletionEvidence(nextFields),
     redaction: nextRun.redactionSummary,
     warnings: [
+      ...(!git.committedChangesIncluded ? ['No resolvable preparation commit is available; only uncommitted changes were inspected. Record committed proof manually if needed.'] : []),
+      ...(!nextFields.resultSummary.trim() ? ['Add a result summary before submitting evidence.'] : []),
+      ...(git.untrackedCount > 0 ? ['Untracked files are listed by path only. Their contents are not included in the patch.'] : []),
       ...(secretLikeFindings.length > 0
         ? ['Secret-like content was detected in local run files. Review and redact before submitting evidence.']
         : []),
