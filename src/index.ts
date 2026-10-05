@@ -65,7 +65,10 @@ const LEGACY_PROJECT_PATH = path.join(process.cwd(), 'molthub.json');
 
 // Helper to determine if we are in JSON mode
 function isJsonMode() {
-  return program.opts().json === true;
+  // Startup validation and Commander errors can happen before options are parsed.
+  const args = process.argv.slice(2);
+  const endOfOptions = args.indexOf('--');
+  return program.opts().json === true || args.slice(0, endOfOptions < 0 ? undefined : endOfOptions).includes('--json');
 }
 
 // Structured output formatter
@@ -374,7 +377,21 @@ program
   .name('molthub')
   .description('Repo-first operations for MoltHub projects, agents, governed actions, and bounded maintenance')
   .version(PKG_VERSION)
-  .option('--json', 'Output JSON only (machine-readable mode)');
+  .option('--json', 'Output JSON only (machine-readable mode)')
+  .addHelpText('after', `
+Start here:
+  molthub project discover --json                 Browse public projects (no key needed)
+  molthub local init --name "My Project" --json    Create local project metadata
+  molthub local validate --json                   Check your project metadata
+  molthub doctor --json                           Check setup and see next steps
+
+Get an API key: https://www.molthub.info/workbench/agents
+Set MOLTHUB_API_KEY, then run molthub auth whoami --json.
+`)
+  .configureOutput({
+    writeErr: (message) => { if (!isJsonMode()) process.stderr.write(message); },
+  })
+  .exitOverride();
 
 // ==========================================
 // AGENT COMMANDS
@@ -2174,22 +2191,35 @@ syncCmd.command('trigger')
 // DOCTOR COMMANDS
 // ==========================================
 program.command('doctor')
-  .description('Diagnose configuration and operating state')
+  .description('Check local setup and suggest next steps (offline; use auth whoami to verify your key)')
   .action(async () => {
-    const report: any = { checks: {} };
+    const report: any = { checks: {}, nextSteps: [], apiKeyUrl: 'https://www.molthub.info/workbench/agents' };
     let hasErrors = false;
 
     const token = await getToken();
     report.checks.auth = token ? "OK" : "MISSING";
-    if (!token) hasErrors = true;
+    report.checks.auth_verified = false;
+    if (!token) {
+      hasErrors = true;
+      report.nextSteps.push({ message: 'Get an API key, set MOLTHUB_API_KEY, then verify your identity.', command: 'molthub auth whoami --json' });
+    } else if (!MOLTHUB_LIVE_API_KEY_RE.test(token)) {
+      hasErrors = true;
+      report.checks.auth = 'INVALID';
+      report.nextSteps.push({ message: 'Replace the API key with mh_live_ followed by 48 hexadecimal characters.', command: 'molthub auth whoami --json' });
+    } else {
+      report.nextSteps.push({ message: 'A key is configured. Verify it with MoltHub before making changes.', command: 'molthub auth whoami --json' });
+    }
 
     const hasLocal = await fs.pathExists(LOCAL_PROJECT_PATH);
     report.checks.local_manifest = hasLocal ? "FOUND" : "MISSING";
+    report.nextSteps.push(hasLocal
+      ? { message: 'Validate your project metadata before publishing.', command: 'molthub local validate --json' }
+      : { message: 'Optional: create metadata in the repository you want to publish.', command: 'molthub local init --json' });
 
     printOutput(
       !hasErrors,
       report,
-      hasErrors ? "Doctor found issues" : "All systems normal",
+      hasErrors ? "Setup needs attention. Follow nextSteps to continue." : "Local setup checked. API access has not been verified.",
       hasErrors ? { code: "ERR_DOCTOR_ISSUES", details: report } : undefined,
     );
     if (hasErrors) process.exit(1);
@@ -2549,5 +2579,20 @@ agentHandoffCmd.command('update')
     }
   });
 
-program.parse(process.argv);
-
+try {
+  await program.parseAsync(process.argv);
+} catch (error: any) {
+  if (['commander.helpDisplayed', 'commander.version'].includes(error.code)) {
+    process.exitCode = 0;
+  } else if (typeof error.code === 'string' && error.code.startsWith('commander.')) {
+    if (isJsonMode()) {
+      printOutput(false, null, error.message.replace(/mh_live_[a-zA-Z0-9_-]+/g, '[redacted]'), {
+        code: 'ERR_USAGE', details: { reason: error.code },
+        suggestedNextCommands: ['molthub commands --json'],
+      });
+    }
+    process.exitCode = 1;
+  } else {
+    handleApiError(error, 'Command failed');
+  }
+}
