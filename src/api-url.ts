@@ -1,4 +1,4 @@
-export const DEFAULT_API_BASE_URL = 'https://molthub.info/api/v1';
+export const DEFAULT_API_BASE_URL = 'https://www.molthub.info/api/v1';
 
 const TRUSTED_API_HOSTS = new Set([
   'molthub.info',
@@ -37,6 +37,10 @@ export function normalizeApiBaseUrl(input?: string) {
   if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && LOCALHOST_HOSTS.has(host))) {
     throw new UntrustedApiBaseUrlError('MOLTHUB_BASE_URL must use https unless it targets localhost.');
   }
+
+  // The apex redirects to www. Resolve known legacy configuration before a
+  // request so project keys never depend on credentials surviving a redirect.
+  if (host === 'molthub.info') parsed.hostname = 'www.molthub.info';
 
   parsed.username = '';
   parsed.password = '';

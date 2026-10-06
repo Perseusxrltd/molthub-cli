@@ -1,0 +1,103 @@
+name: Publish npm package
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag, for example v4.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: molthub-npm-publish
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['20.19.0', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$(node -p 'require("./package.json").version')"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor HEAD origin/master
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run verify:package
+        env:
+          MOLTHUB_PACKAGE_OUTPUT_DIR: ${{ runner.temp }}/molthub-release
+      - uses: actions/upload-artifact@v4
+        if: matrix.node == '24'
+        with:
+          name: molthub-cli-release
+          path: ${{ runner.temp }}/molthub-release/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm install --global npm@12.2.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: molthub-cli-release
+          path: release
+      - name: Publish the tested package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.NODE_AUTH_TOKEN }}
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          package="release/molthub-cli-$version.tgz"
+          test -f "$package"
+          if npm view "molthub-cli@$version" dist.integrity --json > published-integrity.json 2>/dev/null; then
+            echo 'Version already exists; verifying it matches the tested package.'
+          else
+            npm publish "$package" --access public --provenance --tag latest
+            npm view "molthub-cli@$version" dist.integrity --json > published-integrity.json
+          fi
+          node --input-type=module - "$package" <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const expected = 'sha512-' + createHash('sha512').update(readFileSync(process.argv[2])).digest('base64');
+          const published = JSON.parse(readFileSync('published-integrity.json', 'utf8'));
+          if (published !== expected) throw new Error('Published package differs from the tested tarball.');
+          JS
+      - name: Verify the registry installation
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          npm install --global "molthub-cli@$version"
+          test "$(molthub --version)" = "$version"
+          molthub agent bootstrap --json
+          molthub agent workflow --json
+          npm view molthub-cli dist-tags --json
