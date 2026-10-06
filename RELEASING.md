@@ -48,7 +48,8 @@ version, dist-tag, package integrity, global install, and public workflow reques
 
 ## GitHub package fallback
 
-Attach the tested `molthub-cli-X.Y.Z.tgz` to the matching GitHub release. This
+The workflow attaches the tested `molthub-cli-X.Y.Z.tgz` to the matching GitHub
+release independently of npm authentication. Existing assets must match exactly. This
 installs prebuilt JavaScript without TypeScript or a source build:
 
 ```bash
