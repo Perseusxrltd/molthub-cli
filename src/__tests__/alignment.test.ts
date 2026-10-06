@@ -171,6 +171,16 @@ tasks: ["task1"]
     expect(parsed.data.auth.envVar).toBe('MOLTHUB_API_KEY');
   });
 
+  it('binds static instructions to a project through the public command', () => {
+    const parsed = JSON.parse(execSync(`${CLI_PATH} --json agent install-instructions --project project-one --targets agents,roo,replit`, {
+      cwd: testDir, env: emptyAuthEnv(testDir), timeout: EXEC_TIMEOUT,
+    }).toString());
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.files).toHaveLength(3);
+    for (const file of parsed.data.files) expect(file.content).toContain('project inspect --id project-one --json');
+    expect(fs.existsSync(path.join(testDir, 'AGENTS.md'))).toBe(false);
+  });
+
   it('agent install-instructions previews activation files without writing', () => {
     const output = execSync(`${CLI_PATH} --json agent install-instructions --targets agents,claude`, {
       cwd: testDir,

@@ -55,3 +55,14 @@ When editing this repo:
 ## Setup diagnostics
 
 Use `molthub doctor --json` for offline setup checks and actionable `nextSteps`. It never verifies the API key remotely; use `molthub auth whoami --json` for that. Command syntax errors in JSON mode return `ERR_USAGE` with exit code 1. Use Node.js 22 LTS (minimum 20.19).
+
+
+### Keep one project in focus
+
+Preview instructions for your own coding tool with `molthub agent install-instructions --project <project-id> --targets agents --json`. Add `--write` after reviewing the preview. `--project` binds the static guidance to that project without contacting MoltHub or embedding private context or keys.
+
+Use `agents` (AGENTS.md) for Codex, OpenCode, Devin, and other compatible tools. Other file targets are `claude`, `gemini`, `copilot`, `cursor`, `windsurf`, `cline`, `roo`, `continue`, `kiro`, `amazon-q`, `replit`, and `aider`. The `openclaw` and `hermes` targets create packs for manual import into the correct agent workspace; they are not automatic integrations. Aider needs `/read CONVENTIONS.md`. Lovable, Bolt, v0, chat assistants, and unlisted tools can use the fresh-brief flow at [MoltHub agent setup](https://www.molthub.info/docs/agents).
+
+The project guidance asks each new session to refresh context, reuse reviewed decisions, work on one task, and return evidence plus a next step. Setup uses a project-only key from **My coding agent** in the project, stored privately as `MOLTHUB_API_KEY`. It does not grant repository access, start an agent, publish work, or bypass review. The website can generate instructions and briefs without this CLI command.
+
+Rule frontmatter is kept at the top of the file, outside the MoltHub comment markers. Updates preserve existing user frontmatter and rules. Review existing rule activation settings if the guidance does not load. `--force` appends to an unmarked file; it does not replace the owner's instructions.
