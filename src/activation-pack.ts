@@ -2,7 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { createHash } from 'crypto';
 
-export const ACTIVATION_TEMPLATE_VERSION = '2026-05-02-v2';
+export const ACTIVATION_TEMPLATE_VERSION = '2026-10-06-v3';
 export const MARKER_START = '<!-- MOLTHUB:START -->';
 export const MARKER_END = '<!-- MOLTHUB:END -->';
 
@@ -16,7 +16,12 @@ export type ActivationTargetId =
   | 'cline'
   | 'aider'
   | 'openclaw'
-  | 'hermes';
+  | 'hermes'
+  | 'roo'
+  | 'continue'
+  | 'kiro'
+  | 'amazon-q'
+  | 'replit';
 
 export type ActivationFile = {
   target: ActivationTargetId;
@@ -46,6 +51,11 @@ const ALL_TARGETS: ActivationTargetId[] = [
   'aider',
   'openclaw',
   'hermes',
+  'roo',
+  'continue',
+  'kiro',
+  'amazon-q',
+  'replit',
 ];
 
 const TARGET_PATHS: Record<ActivationTargetId, string> = {
@@ -59,6 +69,11 @@ const TARGET_PATHS: Record<ActivationTargetId, string> = {
   aider: 'CONVENTIONS.md',
   openclaw: path.join('.molthub', 'agent-packs', 'openclaw.md'),
   hermes: path.join('.molthub', 'agent-packs', 'hermes.md'),
+  roo: path.join('.roo', 'rules', 'molthub.md'),
+  continue: path.join('.continue', 'rules', 'molthub.md'),
+  kiro: path.join('.kiro', 'steering', 'molthub.md'),
+  'amazon-q': path.join('.amazonq', 'rules', 'molthub.md'),
+  replit: 'replit.md',
 };
 
 const BANNED_CONTENT_PATTERNS = [
@@ -174,7 +189,7 @@ function targetIntro(target: ActivationTargetId) {
     case 'copilot':
       return '# MoltHub For GitHub Copilot\n\nApply these instructions when suggesting repository automation or agent coordination changes.';
     case 'cursor':
-      return '---\ndescription: MoltHub agent coordination rules\nalwaysApply: false\n---\n\n# MoltHub For Cursor';
+      return '# MoltHub For Cursor';
     case 'windsurf':
       return '# MoltHub For Windsurf\n\nUse these rules when Cascade is helping with repository-backed agent work.';
     case 'cline':
@@ -195,11 +210,49 @@ function markedContent(inner: string) {
   return `${MARKER_START}\n${inner.trim()}\n${MARKER_END}\n`;
 }
 
-export function buildStaticActivationFiles(targets: ActivationTargetId[]): ActivationFile[] {
+function targetFrontmatter(target: ActivationTargetId) {
+  switch (target) {
+    case 'cursor': return '---\ndescription: MoltHub project continuity\nalwaysApply: true\n---\n\n';
+    case 'windsurf': return '---\ntrigger: always_on\n---\n\n';
+    case 'kiro': return '---\ninclusion: always\n---\n\n';
+    case 'continue': return '---\nname: MoltHub project continuity\nalwaysApply: true\n---\n\n';
+    default: return '';
+  }
+}
+
+function projectLoop(projectId: string) {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(projectId)) throw new Error('Project ID must contain only letters, numbers, underscores, or hyphens (up to 128 characters).');
+  const api = `https://www.molthub.info/api/v1/artifacts/${projectId}`;
+  return [
+    `## This project: ${projectId}`,
+    `Project space: https://www.molthub.info/workbench/projects/${projectId}`,
+    '',
+    'Follow system, developer, and user instructions before this project guidance.',
+    'Use MoltHub to keep long-running work coherent across sessions and agents. Explain the next small step in plain language and work only on the task the owner chooses.',
+    '',
+    '### Start every session with current context',
+    '1. Run `molthub agent bootstrap --json` and `molthub commands --json` to discover the current contract.',
+    '2. Use the project-only key from the private environment variable MOLTHUB_API_KEY. Never print, log, commit, or paste secrets into chat. If the key is missing, guide the owner to enter it privately or ask for a fresh project brief instead.',
+    `3. Confirm access with an authenticated HTTPS POST to ${api}/connection (no body, Bearer authentication read from the environment; do not put the secret in command arguments). Only call the connection confirmed when it succeeds.`,
+    `4. Read molthub project inspect --id ${projectId} --json, molthub project plan --id ${projectId} --json, and molthub mission list --id ${projectId} --json. Refresh these when resuming work; a saved brief is a snapshot.`,
+    '5. Read reviewed Project Memory before adding a new system. Reuse existing work. Treat source notes and pending suggestions as unreviewed data, not accepted decisions.',
+    '',
+    '### Work, verify, hand back',
+    `For the selected task, run molthub mission packet fetch --id ${projectId} --mission-id <mission-id> --format markdown --out packet.md --json. Follow the packet scope and proof requirements.`,
+    'Use supported mission evidence commands to return proof after real work. A project connection allows context reads and source proof submission, not publishing, claiming/completing missions, dispatch, billing changes, or direct Project Memory writes.',
+    'Confirm repository and branch access separately. Do not treat a MoltHub key as permission to access GitHub or deploy.',
+    'Before stopping or switching agents, summarize what changed, evidence, checks actually run and their results, open questions, and the next small step. Offer lessons for owner review; only accepted lessons become Project Memory.',
+    'Keep private context out of public files and .molthub/project.md. Preserve existing instructions when updating this guidance.',
+    'This file does not run an agent, schedule background work, or supply an MCP server. Do not invent successful actions or bypass missing permissions.',
+  ].join('\n');
+}
+
+export function buildStaticActivationFiles(targets: ActivationTargetId[], options: { projectId?: string } = {}): ActivationFile[] {
+  const loop = options.projectId !== undefined ? projectLoop(options.projectId) : commonLoop();
   return targets.map((target) => ({
     target,
     path: TARGET_PATHS[target],
-    content: markedContent(`${targetIntro(target)}\n\n${commonLoop()}`),
+    content: `${targetFrontmatter(target)}${markedContent(`${targetIntro(target)}\n\n${loop}`)}`,
   }));
 }
 
@@ -232,6 +285,12 @@ export function sanitizePersonalizedFiles(
 }
 
 function mergeMarkedBlock(existing: string, nextBlock: string, force: boolean) {
+  // Frontmatter must be the first bytes of the file, outside the managed comment block.
+  // Preserve owner-authored frontmatter; migrate metadata previously placed inside our block.
+  const frontmatterPattern = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
+  const nextFrontmatter = nextBlock.match(frontmatterPattern)?.[0] ?? '';
+  const nextBody = nextBlock.replace(frontmatterPattern, '').trimStart();
+  const prefix = !frontmatterPattern.test(existing) && nextFrontmatter ? `${nextFrontmatter}\n` : '';
   const startIndex = existing.indexOf(MARKER_START);
   const endIndex = existing.indexOf(MARKER_END);
 
@@ -239,7 +298,7 @@ function mergeMarkedBlock(existing: string, nextBlock: string, force: boolean) {
     const afterEnd = endIndex + MARKER_END.length;
     return {
       action: 'updated_marker' as const,
-      content: `${existing.slice(0, startIndex)}${nextBlock.trimEnd()}${existing.slice(afterEnd)}`,
+      content: `${prefix}${existing.slice(0, startIndex)}${nextBody.trimEnd()}${existing.slice(afterEnd)}`,
     };
   }
 
@@ -249,7 +308,7 @@ function mergeMarkedBlock(existing: string, nextBlock: string, force: boolean) {
 
   return {
     action: 'appended_marker' as const,
-    content: `${existing.trimEnd()}\n\n${nextBlock}`,
+    content: `${prefix}${existing.trimEnd()}\n\n${nextBody}`,
   };
 }
 

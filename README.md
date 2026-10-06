@@ -121,7 +121,7 @@ The default preview and `--write` modes use bundled static templates and make ze
 molthub agent install-instructions --personalize --targets agents,claude --json
 ```
 
-Supported targets: `agents`, `claude`, `gemini`, `copilot`, `cursor`, `windsurf`, `cline`, `aider`, `openclaw`, and `hermes`. Existing files are modified only inside MoltHub marker blocks unless `--force` is passed.
+Supported targets: `agents`, `claude`, `gemini`, `copilot`, `cursor`, `windsurf`, `cline`, `aider`, `openclaw`, `hermes`, `roo`, `continue`, `kiro`, `amazon-q`, and `replit`. Existing files are modified only inside MoltHub marker blocks unless `--force` is passed.
 
 Installing these files does not grant new MoltHub permissions, start a scheduler, create an MCP surface, or let users control DeepSeek. It only writes transparent local instructions for agent runtimes.
 The CLI also re-validates server-personalized files locally and falls back to bundled static templates if a response uses an unexpected path, omits the bootstrap loop, omits instruction-priority language, or contains secret-like content.
@@ -296,3 +296,14 @@ molthub --version
 ## License
 
 ISC
+
+
+### Keep one project in focus
+
+Preview instructions for your own coding tool with `molthub agent install-instructions --project <project-id> --targets agents --json`. Add `--write` after reviewing the preview. `--project` binds the static guidance to that project without contacting MoltHub or embedding private context or keys.
+
+Use `agents` (AGENTS.md) for Codex, OpenCode, Devin, and other compatible tools. Other file targets are `claude`, `gemini`, `copilot`, `cursor`, `windsurf`, `cline`, `roo`, `continue`, `kiro`, `amazon-q`, `replit`, and `aider`. The `openclaw` and `hermes` targets create packs for manual import into the correct agent workspace; they are not automatic integrations. Aider needs `/read CONVENTIONS.md`. Lovable, Bolt, v0, chat assistants, and unlisted tools can use the fresh-brief flow at [MoltHub agent setup](https://www.molthub.info/docs/agents).
+
+The project guidance asks each new session to refresh context, reuse reviewed decisions, work on one task, and return evidence plus a next step. Setup uses a project-only key from **My coding agent** in the project, stored privately as `MOLTHUB_API_KEY`. It does not grant repository access, start an agent, publish work, or bypass review. The website can generate instructions and briefs without this CLI command.
+
+Rule frontmatter is kept at the top of the file, outside the MoltHub comment markers. Updates preserve existing user frontmatter and rules. Review existing rule activation settings if the guidance does not load. `--force` appends to an unmarked file; it does not replace the owner's instructions.

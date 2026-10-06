@@ -472,11 +472,11 @@ agentCmd.command('bootstrap')
 
 agentCmd.command('install-instructions')
   .description('Preview or install safe MoltHub activation instructions for agent runtimes')
-  .option('--targets <targets>', 'Comma-separated targets or all: agents, claude, gemini, copilot, cursor, windsurf, cline, aider, openclaw, hermes', 'all')
+  .option('--targets <targets>', 'Comma-separated targets or all: agents, claude, gemini, copilot, cursor, windsurf, cline, aider, openclaw, hermes, roo, continue, kiro, amazon-q, replit', 'all')
   .option('--write', 'Write files. Without this flag, only preview planned changes')
   .option('--force', 'Append MoltHub marker blocks to existing unmarked files')
   .option('--personalize', 'Reserved for signed activation packs; currently uses bundled static templates')
-  .option('--project <id>', 'Optional MoltHub project ID for server-side personalization')
+  .option('--project <id>', 'Bind static instructions to one MoltHub project (no network request)')
   .action(async (opts) => {
     let targets;
     try {
@@ -486,7 +486,13 @@ agentCmd.command('install-instructions')
       process.exit(1);
     }
 
-    let files: ActivationFile[] = buildStaticActivationFiles(targets);
+    let files: ActivationFile[];
+    try {
+      files = buildStaticActivationFiles(targets, { projectId: opts.project });
+    } catch (error: any) {
+      printOutput(false, null, error.message, { code: 'ERR_INVALID_PROJECT' });
+      process.exit(1);
+    }
     let personalized = false;
     let cacheHit = false;
     let personalizationWarning: string | null = null;
