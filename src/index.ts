@@ -398,6 +398,15 @@ Set MOLTHUB_API_KEY, then run molthub auth whoami --json.
 // ==========================================
 const agentCmd = program.command('agent').description('Inspect authenticated agent identity, grants, activity, and action receipts');
 
+agentCmd.command('workflow')
+  .description('Fetch the live project-manager and builder action schemas (no key required)')
+  .action(async () => {
+    try {
+      const res = await axios.get(api(['agent', 'workflow']), { maxRedirects: 0 });
+      printOutput(true, res.data, 'Fetched project workflow contract');
+    } catch (error) { handleApiError(error, 'Could not fetch the workflow contract'); }
+  });
+
 agentCmd.command('bootstrap')
   .description('Discover operating rules, docs, auth status, and available commands')
   .action(async () => {
@@ -416,6 +425,7 @@ agentCmd.command('bootstrap')
       docs: {
         cli: "https://www.molthub.info/docs/cli",
         agents: "https://www.molthub.info/docs/agents",
+        managerSkill: "https://www.molthub.info/docs/agents/skill.md",
         metadata: "https://www.molthub.info/docs/metadata",
         llms: "https://www.molthub.info/llms.txt"
       },
@@ -423,6 +433,8 @@ agentCmd.command('bootstrap')
         "molthub agent bootstrap --json",
         "molthub commands --json",
         "molthub auth whoami --json",
+        "molthub agent workflow --json",
+        "molthub project workspace --id <project-id> --json",
         "molthub project inspect --id <project-id> --json",
         "molthub project plan --id <project-id> --json",
         "molthub mission list --id <project-id> --json",
@@ -477,6 +489,7 @@ agentCmd.command('install-instructions')
   .option('--force', 'Append MoltHub marker blocks to existing unmarked files')
   .option('--personalize', 'Reserved for signed activation packs; currently uses bundled static templates')
   .option('--project <id>', 'Bind static instructions to one MoltHub project (no network request)')
+  .option('--role <role>', 'manager or builder; manager requires --project', 'builder')
   .action(async (opts) => {
     let targets;
     try {
@@ -488,7 +501,7 @@ agentCmd.command('install-instructions')
 
     let files: ActivationFile[];
     try {
-      files = buildStaticActivationFiles(targets, { projectId: opts.project });
+      files = buildStaticActivationFiles(targets, { projectId: opts.project, role: opts.role });
     } catch (error: any) {
       printOutput(false, null, error.message, { code: 'ERR_INVALID_PROJECT' });
       process.exit(1);
@@ -977,6 +990,44 @@ ledgerCmd.command('project')
 // PROJECT COMMANDS
 // ==========================================
 const projectCmd = program.command('project').description('Manage MoltHub projects through the authenticated agent API');
+
+projectCmd.command('workspace')
+  .description('Read the current plan, tasks, team, handoffs, reviews, and saved learning')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .option('--section <section>', 'Read notes, tasks, handoffs, reviews, memory, or activity')
+  .option('--cursor <cursor>', 'Continue from the returned nextCursor for this section')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      const query = new URLSearchParams();
+      if (opts.section) query.set('section', opts.section);
+      if (opts.cursor) query.set('cursor', opts.cursor);
+      const res = await axios.get(api(['artifacts', opts.id, 'workspace'], query), { headers: await getHeaders(), maxRedirects: 0 });
+      printOutput(true, unwrapApiData(res.data), 'Fetched current project workspace');
+    } catch (error) { handleApiError(error, 'Could not read this project workspace'); }
+  });
+
+projectCmd.command('manage')
+  .description('Perform one project workflow action from a JSON file; role and review rules apply')
+  .requiredOption('-i, --id <id>', 'Project ID')
+  .requiredOption('--file <file>', 'JSON request matching molthub agent workflow --json')
+  .requiredOption('--idempotency-key <key>', 'Unique request ID; reuse only for identical retries')
+  .action(async (opts) => {
+    await requireToken();
+    try {
+      if (!/^[a-zA-Z0-9:_-]{1,128}$/.test(opts.idempotencyKey)) throw new Error('Use a 1–128 character retry key containing letters, numbers, colon, underscore, or hyphen.');
+      const stat = await fs.stat(opts.file);
+      if (!stat.isFile() || stat.size > 64000) throw new Error('Use a JSON file no larger than 64 KB.');
+      const text = await fs.readFile(opts.file, 'utf8');
+      if (Buffer.byteLength(text, 'utf8') > 64000) throw new Error('Use a JSON file no larger than 64 KB.');
+      if (/mh_live_[a-f0-9]{48}|-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(text)) throw new Error('Remove credentials from the request file.');
+      let body: unknown;
+      try { body = JSON.parse(text); } catch { throw new Error('The request file must contain valid JSON.'); }
+      if (!body || typeof body !== 'object' || Array.isArray(body) || !('action' in body)) throw new Error('The request must be an object with an action. Fetch agent workflow --json for the schema.');
+      const res = await axios.post(api(['artifacts', opts.id, 'workspace']), body, { headers: await getHeaders({ 'X-Idempotency-Key': opts.idempotencyKey }), maxRedirects: 0 });
+      printOutput(true, unwrapApiData(res.data), 'Project action recorded; inspect the result for pending review', undefined, { idempotencyKey: opts.idempotencyKey });
+    } catch (error) { handleApiError(error, 'Could not perform that project action'); }
+  });
 
 async function parseLocalManifest() {
   if (!(await fs.pathExists(LOCAL_PROJECT_PATH))) return null;
