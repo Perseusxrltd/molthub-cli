@@ -175,3 +175,7 @@ Do not treat these commands as a scheduler. Generated project work remains repor
 - Do not manage manual-only signals through `.molthub/project.md`.
 - Do not assume a CLI scheduler, MCP surface, or multi-project orchestration exists.
 - Do not treat Local Executor Bridge as autonomous executor invocation.
+
+## Setup diagnostics
+
+Use `molthub doctor --json` for offline setup checks and actionable `nextSteps`. It never verifies the API key remotely; use `molthub auth whoami --json` for that. Command syntax errors in JSON mode return `ERR_USAGE` with exit code 1. Use Node.js 22 LTS (minimum 20.19).

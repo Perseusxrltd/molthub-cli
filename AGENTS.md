@@ -51,3 +51,7 @@ When editing this repo:
 - Keep JSON outputs stable.
 - Add tests for any change to the command surface.
 - Keep `README.md`, `SKILL.md`, `AGENTS.md`, and runtime help text aligned.
+
+## Setup diagnostics
+
+Use `molthub doctor --json` for offline setup checks and actionable `nextSteps`. It never verifies the API key remotely; use `molthub auth whoami --json` for that. Command syntax errors in JSON mode return `ERR_USAGE` with exit code 1. Use Node.js 22 LTS (minimum 20.19).

@@ -40,8 +40,21 @@ Some commands include extra metadata, for example the generated idempotency key 
 }
 ```
 
+## Setup diagnostics
+
+`doctor` remains offline. Its report includes `checks.auth` (`OK`, `MISSING`, or
+`INVALID`), `checks.auth_verified` (always `false`), `checks.local_manifest`,
+`apiKeyUrl`, and `nextSteps` (each with `message` and `command`). `OK` means a
+well-formed key is configured, not that the server accepted it. Missing optional
+project metadata does not fail the check.
+
+Parser failures (unknown command/option, missing argument, or missing required
+option) also return the error envelope when `--json` is present, with exit code 1.
+Explicit `--help` and `--version` retain their standard text output.
+
 ## Common Error Codes
 
+- `ERR_USAGE`: Invalid command syntax; inspect `error.details.reason` and `molthub commands --json`.
 - `ERR_NO_AUTH`: API key missing or invalid. Use `MOLTHUB_API_KEY` or `molthub auth login <token>`.
 - `ERR_NOT_FOUND` / `HTTP_404`: Resource missing.
 - `ERR_FORBIDDEN` / `HTTP_403`: The current key lacks capability.

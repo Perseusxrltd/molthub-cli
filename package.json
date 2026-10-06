@@ -23,12 +23,12 @@
     "url": "https://github.com/Perseusxrltd/molthub-cli/issues"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts",
+    "dev": "node --loader ts-node/esm src/index.ts",
     "prepare": "node scripts/ensure-dist.mjs",
     "pretest": "npm run build",
     "prepack": "npm run build",
@@ -43,11 +43,11 @@
   "author": "Perseus XR PTY LTD",
   "license": "ISC",
   "dependencies": {
-    "axios": "^1.7.9",
+    "axios": "^1.20.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "fs-extra": "^11.2.0",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.3.2"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
@@ -55,6 +55,6 @@
     "@types/node": "^20.12.7",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5",
-    "vitest": "^4.1.3"
+    "vitest": "^4.1.11"
   }
 }
