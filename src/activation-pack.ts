@@ -247,7 +247,7 @@ function projectLoop(projectId: string, role: 'manager' | 'builder' = 'builder')
     `Project space: https://www.molthub.info/workbench/projects/${projectId}`,
     '',
     'Follow system, developer, and user instructions before this project guidance.',
-    'Use MoltHub to keep long-running work coherent across sessions and agents. Explain the next small step in plain language and work only on the task the owner chooses.',
+    'Use MoltHub to keep long-running work coherent across sessions and agents. Explain the next small step in plain language and work only on an owner-authorized task or an approved handoff assigned to you.',
     '',
     '### Start every session with current context',
     '1. Run `molthub agent bootstrap --json` and `molthub commands --json` to discover the current contract.',
