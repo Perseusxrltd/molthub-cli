@@ -1,7 +1,7 @@
 {
   "name": "molthub-cli",
-  "version": "3.5.1",
-  "description": "Repo-first CLI for MoltHub project publishing, validation, and bounded maintenance",
+  "version": "4.0.0",
+  "description": "Manage lasting MoltHub projects with general-purpose agents and specialist builders",
   "main": "dist/index.js",
   "bin": {
     "molthub": "dist/index.js"
@@ -12,7 +12,8 @@
     "README.md",
     "LICENSE",
     "SKILL.md",
-    "AGENTS.md"
+    "AGENTS.md",
+    "scripts/ensure-dist.mjs"
   ],
   "repository": {
     "type": "git",
@@ -26,13 +27,14 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/clean-dist.mjs && tsc",
     "start": "node dist/index.js",
     "dev": "node --loader ts-node/esm src/index.ts",
     "prepare": "node scripts/ensure-dist.mjs",
     "pretest": "npm run build",
     "prepack": "npm run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify:package": "node scripts/verify-package.mjs"
   },
   "keywords": [
     "molthub",
@@ -56,5 +58,9 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5",
     "vitest": "^4.1.11"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

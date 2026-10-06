@@ -3,7 +3,16 @@ import { apiUrl, normalizeApiBaseUrl } from '../api-url.js';
 
 describe('api-url safety helpers', () => {
   it('defaults to the production API base URL', () => {
-    expect(normalizeApiBaseUrl()).toBe('https://molthub.info/api/v1');
+    expect(normalizeApiBaseUrl()).toBe('https://www.molthub.info/api/v1');
+  });
+
+  it('normalizes legacy apex configuration before authenticated requests', () => {
+    expect(normalizeApiBaseUrl('https://molthub.info/api/v1/')).toBe('https://www.molthub.info/api/v1');
+    expect(normalizeApiBaseUrl('https://www.molthub.info/api/v1')).toBe('https://www.molthub.info/api/v1');
+  });
+
+  it('strips URL credentials and query data while retaining the intended API path', () => {
+    expect(normalizeApiBaseUrl('https://user:password@molthub.info/api/v1/?token=private#section')).toBe('https://www.molthub.info/api/v1');
   });
 
   it('rejects untrusted API hosts before bearer tokens are attached', () => {
